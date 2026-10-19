@@ -115,7 +115,7 @@ export function normaliseSettings(raw: unknown): Settings {
     const { stepIncrement: _a, painThreshold: _b, ...rest } = r;
     r = { ...rest, version: 2 };
   }
-  if (r.version < 3) {
+  if ((r.version ?? 0) < 3) {
     const { isoMax: _c, ...rest } = r;
     r = { ...rest, version: 3 };
   }
