@@ -49,10 +49,10 @@ test("no progression during the taper even when green", () => {
   assert.equal(plan.steps.target, 10000); // Sunday
 });
 
-test("isometric load climbs 2.5kg after 5 green days, not before", () => {
+test("isometric load climbs after 5 green days (5kg in the light range), not before", () => {
   const e = days("2026-11-02", 6, greenDay);
   assert.equal(planFor(e, noCourse, "2026-11-06").plan.iso.load, 20);
-  assert.equal(planFor(e, noCourse, "2026-11-07").plan.iso.load, 22.5);
+  assert.equal(planFor(e, noCourse, "2026-11-07").plan.iso.load, 25);
 });
 
 test("steps need 2 clean weeks and a steps week, then +500; weekend unchanged", () => {
@@ -80,6 +80,8 @@ test("old v1 settings adopt conservative defaults", async () => {
   const s = normaliseSettings({ stepIncrement: 750, painThreshold: 6, weekdayStart: 6000 });
   assert.equal(s.stepIncrement, 500);
   assert.equal(s.painThreshold, 5);
+  assert.equal(normaliseSettings({ version: 2, isoMax: 60 }).isoMax, 100);
+  assert.equal(normaliseSettings({ version: 3, isoMax: 80 }).isoMax, 80);
 });
 
 test("red morning: steps back to baseline, iso drops, calf work skipped", () => {
@@ -109,7 +111,7 @@ test("two rescue courses in 4 weeks escalates", () => {
   assert.match(a.title, /escalate/);
 });
 
-test("seated raise +2.5kg after three tolerated leg days", () => {
+test("seated raise progresses after three tolerated leg days (5kg in the light range)", () => {
   const e = days("2026-11-02", 10, (d) => ({
     ...greenDay(d),
     ...([2, 4].includes(new Date(d).getUTCDay()) ? { legDay: true, isotonicPain: 2 } : {}),
@@ -118,7 +120,7 @@ test("seated raise +2.5kg after three tolerated leg days", () => {
   const { events } = planFor(e, noCourse, "2026-11-12");
   const up = events.find((x) => x.kind === "seated");
   assert.equal(up?.date, "2026-11-12");
-  assert.equal(up?.to, "22.5kg");
+  assert.equal(up?.to, "25kg");
 });
 
 test("steps and calf progressions never land in the same week", () => {

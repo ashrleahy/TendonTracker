@@ -117,6 +117,9 @@ export function weekKind(settings: Settings, date: string): WeekKind {
 
 export const isConsolidation = (settings: Settings, date: string) => weekKind(settings, date) === "hold";
 
+/** Light range moves in double steps; the tendon gating is unchanged. */
+export const stepFor = (load: number, inc: number, lightKg: number) => (load < lightKg ? inc * 2 : inc);
+
 export function replay(entries: Entry[], settings: Settings, through: string): { days: DayState[]; events: PlanEvent[] } {
   const map = new Map(entries.map((e) => [e.date, e]));
   const statusCache = new Map<string, Status | undefined>();
@@ -237,7 +240,7 @@ export function replay(entries: Entry[], settings: Settings, through: string): {
     } else if (
       !hold.active &&
       !isConsolidation(settings, d) &&
-      iso + settings.isoIncrement <= settings.isoMax &&
+      iso + stepFor(iso, settings.isoIncrement, settings.lightKg) <= settings.isoMax &&
       daysBetween(lastIsoChange, d) >= settings.isoGreenDays &&
       Array.from({ length: settings.isoGreenDays }, (_, k) => k + 1).every((i) => {
         const x = addDays(d, -i);
@@ -246,8 +249,9 @@ export function replay(entries: Entry[], settings: Settings, through: string): {
       today !== "amber"
     ) {
       isoStack.push(iso);
-      ev({ date: d, kind: "iso", from: `${iso}kg`, to: `${iso + settings.isoIncrement}kg`, why: `${settings.isoGreenDays} green days with holds done`, dir: 1 });
-      iso += settings.isoIncrement;
+      const inc = stepFor(iso, settings.isoIncrement, settings.lightKg);
+      ev({ date: d, kind: "iso", from: `${iso}kg`, to: `${iso + inc}kg`, why: `${settings.isoGreenDays} green days with holds done`, dir: 1 });
+      iso += inc;
       lastIsoChange = d;
     }
 
@@ -259,8 +263,9 @@ export function replay(entries: Entry[], settings: Settings, through: string): {
       const pick: "seated" | "standing" | undefined =
         seatedReady && standingReady ? (lastCalfKind === "seated" ? "standing" : "seated") : seatedReady ? "seated" : standingReady ? "standing" : undefined;
       if (pick === "seated") {
-        ev({ date: d, kind: "seated", from: `${seated}kg`, to: `${seated + settings.seatedIncrement}kg`, why: `${need} leg days tolerated`, dir: 1 });
-        seated += settings.seatedIncrement;
+        const inc = stepFor(seated, settings.seatedIncrement, settings.lightKg);
+        ev({ date: d, kind: "seated", from: `${seated}kg`, to: `${seated + inc}kg`, why: `${need} leg days tolerated`, dir: 1 });
+        seated += inc;
         legSinceSeatedUp = 0;
         lastCalfUp = d;
         lastCalfKind = "seated";

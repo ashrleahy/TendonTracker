@@ -901,7 +901,11 @@ function Plan({ entries, settings, onSave, mode }: { entries: Entry[]; settings:
         </div>
         <div className="row">
           <Num label="Hold week every" value={s.consolidateEvery} onChange={(v) => set("consolidateEvery", v ?? 4)} suffix="wks" />
-          <Num label="Isometric ceiling" value={s.isoMax} onChange={(v) => set("isoMax", v ?? 60)} step={5} suffix="kg" />
+          <Num label="Isometric ceiling" value={s.isoMax} onChange={(v) => set("isoMax", v ?? 100)} step={5} suffix="kg" />
+        </div>
+        <div className="row">
+          <Num label="Double steps below" value={s.lightKg} onChange={(v) => set("lightKg", v ?? 50)} step={5} suffix="kg" />
+          <span />
         </div>
         <p className="label">Leg days</p>
         <div className="chips">
@@ -951,8 +955,8 @@ function Plan({ entries, settings, onSave, mode }: { entries: Entry[]; settings:
           <li><b>Status</b> compares first-steps (and evening) pain with the median of the previous 7 days: same or lower green, +1 amber, +2 red. Pain over 3/10 during loading or walking makes it at least amber.</li>
           <li><b>Weeks</b> alternate from the first Monday after the diclofenac hold: steps week, calf week, steps week, then a hold week every {s.consolidateEvery}th week. Only one thing changes in any week. Isometrics progress independently.</li>
           <li><b>Steps</b> can rise {s.stepIncrement} on the Monday of a steps week, only after 2 weeks with no red day and no diclofenac, last week at most 1 amber, weekdays at target, and Monday no worse than Friday. Weekdays climb to the weekend baseline first, then all days move toward the goal. A red day in the week drops weekdays back a step; a red morning drops that day to baseline.</li>
-          <li><b>Isometrics</b> add {s.isoIncrement}kg after {s.isoGreenDays} green days in a row with holds done (not counting diclofenac days), up to {s.isoMax}kg; a red morning returns to the previous load.</li>
-          <li><b>Calves</b>: in a calf week, after {s.sessionsToProgress} tolerated leg sessions (pain ≤3/10, green next morning), one exercise progresses: seated raise +{s.seatedIncrement}kg or standing raise up a level (double → single leg → single leg + 2.5kg steps), taking turns. Nothing progresses on an amber or red leg day; a red morning after a leg day steps both back.</li>
+          <li><b>Isometrics</b> add {s.isoIncrement}kg ({s.isoIncrement * 2}kg below {s.lightKg}kg) after {s.isoGreenDays} green days in a row with holds done (not counting diclofenac days), up to {s.isoMax}kg; a red morning returns to the previous load.</li>
+          <li><b>Calves</b>: in a calf week, after {s.sessionsToProgress} tolerated leg sessions (pain ≤3/10, green next morning), one exercise progresses: seated raise +{s.seatedIncrement}kg ({s.seatedIncrement * 2}kg below {s.lightKg}kg) or standing raise up a level (double → single leg → single leg + 2.5kg steps), taking turns. Nothing progresses on an amber or red leg day; a red morning after a leg day steps both back.</li>
           <li><b>Diclofenac</b>: nothing progresses until 4 days after the last dose. Pain at or above {s.painThreshold}/10 (or two red days running) triggers advice: offload; a 3-day 50mg × 3 course only after 7 clear days; escalate after two rescue courses in 4 weeks or three days over threshold on an NSAID.</li>
           <li><b>Escalate</b> if still mostly amber/red 1–3 weeks after stopping: MRI and sports physician.</li>
         </ul>

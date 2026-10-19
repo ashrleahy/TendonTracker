@@ -65,6 +65,7 @@ export interface Settings {
   painThreshold: number; // any score at/above triggers an alert
   isoIncrement: number; // kg
   isoMax: number; // kg ceiling for holds
+  lightKg: number; // below this, iso and seated increments double (light range)
   isoGreenDays: number; // consecutive green days needed
   seatedIncrement: number; // kg
   sessionsToProgress: number; // tolerated leg sessions needed
@@ -85,12 +86,13 @@ export const DEFAULT_SETTINGS: Settings = {
   legDays: [2, 4],
   painThreshold: 5,
   isoIncrement: 2.5,
-  isoMax: 60,
+  isoMax: 100,
+  lightKg: 50,
   isoGreenDays: 5,
   seatedIncrement: 2.5,
   sessionsToProgress: 3,
   consolidateEvery: 4,
-  version: 2,
+  version: 3,
   courses: [
     {
       id: "taper-oct-2026",
@@ -112,6 +114,10 @@ export function normaliseSettings(raw: unknown): Settings {
   if (!r.version || r.version < 2) {
     const { stepIncrement: _a, painThreshold: _b, ...rest } = r;
     r = { ...rest, version: 2 };
+  }
+  if (r.version < 3) {
+    const { isoMax: _c, ...rest } = r;
+    r = { ...rest, version: 3 };
   }
   return {
     ...DEFAULT_SETTINGS,
