@@ -12,14 +12,16 @@ Daily log for Achilles rehab: pain monitoring (Silbernagel model), steps against
 
 Without `DATABASE_URL` the app still works, storing everything in the browser (export/import JSON from History).
 
-## Rules
+## How the plan works
 
-- **Status:** morning first-steps pain (and evening pain) vs the median of the previous 7 days. Same or lower = green, +1 = amber, +2 = red. Pain over 3/10 during holds, calf work or walking = at least amber.
-- **Steps:** reviewed over the last 7 days. Any red drops weekdays one increment (floor 6,000). 2+ ambers holds. A green week at target raises weekdays; weekends stay at baseline until weekdays catch up, then all days move to the goal.
-- **One variable per week:** raising steps or seated-raise load locks the other for 7 days. Isometric load is exempt.
-- **Isometrics:** +5kg after 3 consecutive green days with holds logged; red drops back.
-- **Seated raise:** +5kg after two leg days in a row with pain ≤3/10 and a green next morning.
-- **Diclofenac:** progressions hold until 4 days after the last dose.
+The Today screen is a prescription, recomputed from your log each day (history is replayed from the plan start, so targets are earned rather than set):
+
+- **Status:** first-steps (and evening) pain vs the median of the previous 7 days. Same or lower = green, +1 = amber, +2 = red. Pain over 3/10 during loading or walking = at least amber.
+- **Steps:** reviewed each Monday. A green week at target (≤1 amber, no red, Monday no worse than Friday) adds one increment to weekdays until they reach the weekend baseline, then all days move to the goal. Any red in the week drops weekdays back. A red morning drops that day to baseline.
+- **Isometrics:** +5kg after 3 green days with holds done; red morning returns to the previous load.
+- **Calves (leg days):** after two tolerated sessions (pain ≤3/10, green next morning) the seated raise adds 5kg, otherwise the standing raise moves up a level. Red morning after a leg day steps both back.
+- **One variable per week:** step increases and calf progressions lock each other for 7 days.
+- **Diclofenac:** taper is editable in Plan. Nothing progresses until 4 days after the last dose. Pain at/above the threshold (default 6/10) or two red days running → offload advice; a 3-day 50mg × 3 rescue course is offered only after 7 clear days; escalation after two rescue courses in 4 weeks, three days over threshold on an NSAID, or still mostly amber/red 1–3 weeks after stopping.
 
 ## Dev
 

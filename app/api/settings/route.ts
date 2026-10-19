@@ -1,5 +1,5 @@
 import { sql, ensureSchema, authorised, unauthorised, noDb } from "@/lib/db";
-import { DEFAULT_SETTINGS, type Settings } from "@/lib/types";
+import { normaliseSettings, type Settings } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -8,7 +8,7 @@ export async function GET(req: Request) {
   if (!sql) return noDb();
   await ensureSchema();
   const rows = (await sql`SELECT data FROM tt_settings WHERE id = 1`) as { data: Settings }[];
-  return Response.json({ ...DEFAULT_SETTINGS, ...(rows[0]?.data ?? {}) });
+  return Response.json(normaliseSettings(rows[0]?.data ?? {}));
 }
 
 export async function PUT(req: Request) {

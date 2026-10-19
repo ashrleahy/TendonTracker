@@ -236,3 +236,59 @@ textarea { resize: vertical; }
 
 .gate { margin-top: 20vh; display: flex; flex-direction: column; gap: 14px; }
 .gate label { display: flex; flex-direction: column; gap: 6px; font-size: 14px; }
+
+/* ---- plan UI ---- */
+.card-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px; }
+.card-head h2 { margin: 0; }
+.reasons { margin: 8px 0 0; }
+.nudge { margin: 10px 0 0; font-size: 13px; color: var(--accent); }
+.nudge.warn { color: var(--bad-ink); background: var(--bad-bg); padding: 10px 12px; border-radius: 10px; margin: 0 0 10px; }
+h3.section { font-size: 17px; margin: 10px 0 -2px; letter-spacing: -0.01em; }
+
+.rx { display: flex; flex-direction: column; margin-bottom: 6px; }
+.rx-big { font-size: 30px; font-weight: 650; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; line-height: 1.15; }
+.rx-big small { font-size: 15px; font-weight: 500; color: var(--text-2); margin-left: 6px; letter-spacing: 0; }
+.rx-sub { font-size: 14px; color: var(--text-2); }
+.rx-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
+.rx-list div { display: flex; flex-direction: column; background: var(--surface-2); border-radius: 10px; padding: 10px 12px; }
+.rx-list b { font-size: 14px; }
+.rx-list span { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.card > p.muted.small { margin: 4px 0 12px; }
+
+button.full { width: 100%; margin-top: 4px; }
+button.link.left { align-self: flex-start; color: var(--accent); }
+.card button.link { display: block; margin-top: 8px; }
+.done-tag { font-size: 12px; font-weight: 600; color: var(--good-ink); background: var(--good-bg); border-radius: 999px; padding: 2px 9px; }
+
+.doses { display: grid; grid-template-columns: repeat(auto-fit, minmax(80px, 1fr)); gap: 8px; margin-top: 8px; }
+.doses button.on { background: var(--good-bg); color: var(--good-ink); border-color: transparent; }
+
+.mods { margin: 8px 0 12px; padding-left: 18px; font-size: 14px; color: var(--text-2); }
+.mods li { margin-bottom: 4px; }
+
+.strip .cell.dosed { box-shadow: inset 0 -3px 0 var(--text-2); }
+.row.three-btn { grid-template-columns: 1fr 1fr 1fr; }
+
+.course { border-top: 1px solid var(--line); padding-top: 12px; margin-top: 12px; }
+.course:first-of-type { border-top: none; padding-top: 0; margin-top: 0; }
+.course .card-head b { font-size: 14px; }
+.dose-row { display: grid; grid-template-columns: 1fr 1fr 74px 62px 24px; gap: 6px; align-items: center; margin-bottom: 6px; }
+.dose-row input, .dose-row select { padding: 7px 6px; font-size: 13px; min-width: 0; }
+@media (max-width: 400px) { .dose-row { grid-template-columns: 1fr 1fr 24px; } .dose-row select { grid-row: 2; } }
+
+.targets { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
+.targets div { background: var(--surface-2); border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; }
+.targets span { font-size: 12px; color: var(--text-3); }
+.targets b { font-size: 20px; font-variant-numeric: tabular-nums; }
+details summary { cursor: pointer; color: var(--accent); margin: 4px 0 10px; }
+details .row { margin-bottom: 10px; }
+
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chips button { padding: 7px 10px; font-size: 13px; }
+.chips button.on { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+
+.changes em { display: block; font-style: normal; font-size: 12px; color: var(--text-3); }
+.changes li.up { border-left: 3px solid var(--good); padding-left: 8px; }
+.changes li.down { border-left: 3px solid var(--bad); padding-left: 8px; }
+
+.card .row + .row, .card .row + .label { margin-top: 12px; }

@@ -1,5 +1,5 @@
 "use client";
-import { DEFAULT_SETTINGS, type Entry, type Settings } from "./types";
+import { normaliseSettings, type Entry, type Settings } from "./types";
 
 const LS_ENTRIES = "tt.entries";
 const LS_SETTINGS = "tt.settings";
@@ -55,11 +55,11 @@ export async function loadAll(mode: Mode): Promise<{ entries: Entry[]; settings:
     // keep a local copy as an offline/backup cache
     lsSet(LS_ENTRIES, entries);
     lsSet(LS_SETTINGS, settings);
-    return { entries, settings };
+    return { entries, settings: normaliseSettings(settings) };
   }
   return {
     entries: lsGet<Entry[]>(LS_ENTRIES, []),
-    settings: { ...DEFAULT_SETTINGS, ...lsGet<Partial<Settings>>(LS_SETTINGS, {}) },
+    settings: normaliseSettings(lsGet<unknown>(LS_SETTINGS, {})),
   };
 }
 
