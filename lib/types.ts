@@ -83,7 +83,7 @@ export const DEFAULT_SETTINGS: Settings = {
   stepIncrement: 500,
   isoStart: 20,
   seatedStart: 20,
-  legDays: [2, 4],
+  legDays: [1, 6],
   painThreshold: 5,
   isoIncrement: 2.5,
   isoMax: 100,
@@ -92,7 +92,7 @@ export const DEFAULT_SETTINGS: Settings = {
   seatedIncrement: 2.5,
   sessionsToProgress: 3,
   consolidateEvery: 4,
-  version: 3,
+  version: 4,
   courses: [
     {
       id: "taper-oct-2026",
@@ -118,6 +118,15 @@ export function normaliseSettings(raw: unknown): Settings {
   if ((r.version ?? 0) < 3) {
     const { isoMax: _c, ...rest } = r;
     r = { ...rest, version: 3 };
+  }
+  if ((r.version ?? 0) < 4) {
+    // leg days moved from the Tue/Thu default to Mon/Sat
+    const ld = r.legDays;
+    if (!ld || (ld.length === 2 && ld.includes(2) && ld.includes(4))) {
+      const { legDays: _d, ...rest } = r;
+      r = rest;
+    }
+    r = { ...r, version: 4 };
   }
   return {
     ...DEFAULT_SETTINGS,

@@ -10,7 +10,7 @@ const days = (start: string, n: number, f: (d: string, i: number) => Partial<Ent
     return { date: d, ...f(d, i) };
   });
 
-const noCourse: Settings = { ...DEFAULT_SETTINGS, planStart: "2026-11-02", courses: [] };
+const noCourse: Settings = { ...DEFAULT_SETTINGS, planStart: "2026-11-02", courses: [], legDays: [2, 4] };
 const greenDay = (d: string): Partial<Entry> => ({
   morningPain: 2,
   eveningPain: 2,
@@ -82,6 +82,9 @@ test("old v1 settings adopt conservative defaults", async () => {
   assert.equal(s.painThreshold, 5);
   assert.equal(normaliseSettings({ version: 2, isoMax: 60 }).isoMax, 100);
   assert.equal(normaliseSettings({ version: 3, isoMax: 80 }).isoMax, 80);
+  assert.deepEqual(normaliseSettings({ version: 3, legDays: [2, 4] }).legDays, [1, 6]);
+  assert.deepEqual(normaliseSettings({ version: 3, legDays: [3, 5] }).legDays, [3, 5]);
+  assert.deepEqual(DEFAULT_SETTINGS.legDays, [1, 6]);
 });
 
 test("red morning: steps back to baseline, iso drops, calf work skipped", () => {

@@ -372,7 +372,8 @@ export function planFor(entries: Entry[], settings: Settings, date: string): { p
           ? "Red morning: skip calf isotonics today. Leg session without loaded calf work (extensions, curls, trap bar)."
           : status === "amber"
             ? "Amber: same loads, no extra sets."
-            : "3 s up, 3 s down. Flat floor, no drop below neutral.",
+            : "3 s up, 3 s down. Flat floor, no drop below neutral." +
+              (weekend ? " Biggest load day of the week (session + weekend steps): train early, then keep walking in short chunks." : ""),
       seated: { load: state.seated, ...sch },
       standing: stand,
     };
