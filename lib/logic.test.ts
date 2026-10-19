@@ -49,18 +49,37 @@ test("no progression during the taper even when green", () => {
   assert.equal(plan.steps.target, 10000); // Sunday
 });
 
-test("isometric load climbs 5kg after 3 green days", () => {
-  const e = days("2026-11-02", 4, greenDay);
-  const { plan } = planFor(e, noCourse, "2026-11-05");
-  assert.equal(plan.iso.load, 25);
+test("isometric load climbs 2.5kg after 5 green days, not before", () => {
+  const e = days("2026-11-02", 6, greenDay);
+  assert.equal(planFor(e, noCourse, "2026-11-06").plan.iso.load, 20);
+  assert.equal(planFor(e, noCourse, "2026-11-07").plan.iso.load, 22.5);
 });
 
-test("green week raises weekday steps on Monday, weekend unchanged", () => {
-  const e = days("2026-11-02", 8, greenDay);
-  const { plan } = planFor(e, noCourse, "2026-11-09");
+test("steps need 2 clean weeks and a steps week, then +500; weekend unchanged", () => {
+  const e = days("2026-11-02", 15, greenDay);
+  assert.equal(planFor(e, noCourse, "2026-11-09").plan.state.weekday, 6000); // only 1 week
+  const { plan } = planFor(e, noCourse, "2026-11-16");
   assert.equal(plan.state.weekday, 6500);
   assert.equal(plan.state.weekend, 10000);
   assert.equal(plan.steps.target, 6500);
+});
+
+test("consolidation week every 4th week blocks progression", () => {
+  const e = days("2026-11-02", 40, (d) => ({
+    ...greenDay(d),
+    ...([2, 4].includes(new Date(d).getUTCDay()) ? { legDay: true, isotonicPain: 2 } : {}),
+  }));
+  const { events } = planFor(e, noCourse, "2026-12-11");
+  const inWeek4 = events.filter((x) => x.dir > 0 && x.date >= "2026-11-23" && x.date <= "2026-11-29");
+  assert.equal(inWeek4.length, 0);
+  assert.ok(events.some((x) => x.dir > 0 && x.date >= "2026-11-30")); // resumes after
+});
+
+test("old v1 settings adopt conservative defaults", async () => {
+  const { normaliseSettings } = await import("./types.ts");
+  const s = normaliseSettings({ stepIncrement: 750, painThreshold: 6, weekdayStart: 6000 });
+  assert.equal(s.stepIncrement, 500);
+  assert.equal(s.painThreshold, 5);
 });
 
 test("red morning: steps back to baseline, iso drops, calf work skipped", () => {
@@ -90,16 +109,34 @@ test("two rescue courses in 4 weeks escalates", () => {
   assert.match(a.title, /escalate/);
 });
 
-test("seated raise +5kg after two tolerated leg days, locked a week after a step increase", () => {
-  // Leg days Tue/Thu. Plan start Mon 2 Nov.
+test("seated raise +2.5kg after three tolerated leg days", () => {
   const e = days("2026-11-02", 10, (d) => ({
     ...greenDay(d),
     ...([2, 4].includes(new Date(d).getUTCDay()) ? { legDay: true, isotonicPain: 2 } : {}),
   }));
-  // Tue 3 + Thu 5 tolerated → progress on Tue 10, unless a step increase on Mon 9 locks it
-  const { events } = planFor(e, noCourse, "2026-11-11");
-  const stepUp = events.find((x) => x.kind === "steps" && x.dir > 0);
-  const seatedUp = events.find((x) => x.kind === "seated");
-  assert.ok(stepUp);
-  assert.equal(seatedUp, undefined); // locked by the Monday step increase → standing progresses instead? no: lock applies to both
+  // Tue 3, Thu 5, Tue 10 tolerated → progress on Thu 12
+  const { events } = planFor(e, noCourse, "2026-11-12");
+  const up = events.find((x) => x.kind === "seated");
+  assert.equal(up?.date, "2026-11-12");
+  assert.equal(up?.to, "22.5kg");
+});
+
+test("steps and calf progressions never land in the same week", () => {
+  const e = days("2026-11-02", 60, (d) => ({
+    ...greenDay(d),
+    ...([2, 4].includes(new Date(d).getUTCDay()) ? { legDay: true, isotonicPain: 2 } : {}),
+  }));
+  const { events } = planFor(e, noCourse, "2026-12-31");
+  const monday = (d: string) => addDays(d, -((new Date(d).getUTCDay() + 6) % 7));
+  const ups = events.filter((x) => x.dir > 0 && x.kind !== "iso");
+  const byWeek = new Map<string, Set<string>>();
+  for (const u of ups) {
+    const k = monday(u.date);
+    byWeek.set(k, (byWeek.get(k) ?? new Set()).add(u.kind === "steps" ? "steps" : "calves"));
+  }
+  assert.ok(ups.some((u) => u.kind === "steps") && ups.some((u) => u.kind !== "steps"));
+  for (const [w, kinds] of byWeek) assert.equal(kinds.size, 1, `week of ${w}`);
+  // at most one calf progression per week
+  const calfWeeks = ups.filter((u) => u.kind !== "steps").map((u) => monday(u.date));
+  assert.equal(new Set(calfWeeks).size, calfWeeks.length);
 });

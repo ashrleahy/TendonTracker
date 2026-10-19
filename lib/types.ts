@@ -63,6 +63,13 @@ export interface Settings {
   seatedStart: number;
   legDays: number[]; // 0=Sun..6=Sat
   painThreshold: number; // any score at/above triggers an alert
+  isoIncrement: number; // kg
+  isoMax: number; // kg ceiling for holds
+  isoGreenDays: number; // consecutive green days needed
+  seatedIncrement: number; // kg
+  sessionsToProgress: number; // tolerated leg sessions needed
+  consolidateEvery: number; // every Nth week: no progressions (0 = off)
+  version?: number;
   courses: Course[];
   overrides: Override[];
 }
@@ -76,7 +83,14 @@ export const DEFAULT_SETTINGS: Settings = {
   isoStart: 20,
   seatedStart: 20,
   legDays: [2, 4],
-  painThreshold: 6,
+  painThreshold: 5,
+  isoIncrement: 2.5,
+  isoMax: 60,
+  isoGreenDays: 5,
+  seatedIncrement: 2.5,
+  sessionsToProgress: 3,
+  consolidateEvery: 4,
+  version: 2,
   courses: [
     {
       id: "taper-oct-2026",
@@ -93,7 +107,12 @@ export const DEFAULT_SETTINGS: Settings = {
 
 /** Merge stored settings (possibly from the older schema) with defaults. */
 export function normaliseSettings(raw: unknown): Settings {
-  const r = (raw && typeof raw === "object" ? raw : {}) as Partial<Settings>;
+  let r = (raw && typeof raw === "object" ? raw : {}) as Partial<Settings>;
+  // v1 settings carried the less conservative defaults; adopt the new ones
+  if (!r.version || r.version < 2) {
+    const { stepIncrement: _a, painThreshold: _b, ...rest } = r;
+    r = { ...rest, version: 2 };
+  }
   return {
     ...DEFAULT_SETTINGS,
     ...Object.fromEntries(Object.entries(r).filter(([k]) => k in DEFAULT_SETTINGS)),

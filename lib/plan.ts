@@ -70,19 +70,19 @@ export interface DayState {
   weekend: number;
   iso: number;
   seated: number;
-  standingLevel: number; // 0 bilateral BW, 1 single-leg BW, 2+ single-leg + (level-1)*5kg
+  standingLevel: number; // 0 bilateral BW, 1 single-leg BW, 2+ single-leg + (level-1)*2.5kg
   hold: boolean;
   holdUntil?: string;
   status?: Status;
 }
 
 const STANDING_NAMES = (lvl: number) =>
-  lvl <= 0 ? "Double-leg, bodyweight" : lvl === 1 ? "Single-leg, bodyweight" : `Single-leg + ${(lvl - 1) * 5}kg`;
+  lvl <= 0 ? "Double-leg, bodyweight" : lvl === 1 ? "Single-leg, bodyweight" : `Single-leg + ${(lvl - 1) * 2.5}kg`;
 
 export function standingRx(level: number) {
   if (level <= 0) return { desc: "Double-leg, bodyweight", sets: 3, reps: 15, loadKg: 0 };
   if (level === 1) return { desc: "Single-leg, bodyweight", sets: 3, reps: 12, loadKg: 0 };
-  return { desc: `Single-leg, hold ${(level - 1) * 5}kg`, sets: 3, reps: 10, loadKg: (level - 1) * 5 };
+  return { desc: `Single-leg, hold ${(level - 1) * 2.5}kg`, sets: 3, reps: 10, loadKg: (level - 1) * 2.5 };
 }
 
 export function seatedScheme(load: number) {
@@ -90,6 +90,32 @@ export function seatedScheme(load: number) {
   if (load < 70) return { sets: 3, reps: 12 };
   return { sets: 4, reps: 8 };
 }
+
+function anchorMonday(settings: Settings): string {
+  // first Monday on/after plan start that is clear of every diclofenac hold
+  let anchor = settings.planStart;
+  for (let i = 0; i < 400 && (dow(anchor) !== 1 || nsaidHold(settings, anchor).active); i++) anchor = addDays(anchor, 1);
+  return anchor;
+}
+
+export type WeekKind = "pre" | "steps" | "calves" | "hold";
+
+/**
+ * Weeks run Monday–Sunday from the first Monday after the diclofenac hold.
+ * Every Nth week is a hold week; the others alternate steps week / calf week,
+ * so only one thing changes in any week and both get regular turns.
+ */
+export function weekKind(settings: Settings, date: string): WeekKind {
+  const anchor = anchorMonday(settings);
+  if (date < anchor) return "pre";
+  const w = Math.floor(daysBetween(anchor, date) / 7);
+  const n = settings.consolidateEvery;
+  if (n >= 2 && w % n === n - 1) return "hold";
+  const active = n >= 2 ? w - Math.floor((w + 1) / n) : w; // non-hold weeks before this one
+  return active % 2 === 0 ? "steps" : "calves";
+}
+
+export const isConsolidation = (settings: Settings, date: string) => weekKind(settings, date) === "hold";
 
 export function replay(entries: Entry[], settings: Settings, through: string): { days: DayState[]; events: PlanEvent[] } {
   const map = new Map(entries.map((e) => [e.date, e]));
@@ -99,6 +125,12 @@ export function replay(entries: Entry[], settings: Settings, through: string): {
     return statusCache.get(d);
   };
   const tolerated = (e: Entry) => (e.isotonicPain ?? 0) <= 3 && st(addDays(e.date, 1)) === "green";
+  // days on (or just off) diclofenac are masked, so they never count as evidence for progressing
+  const evidence = (d: string) => d >= settings.planStart && !nsaidHold(settings, d).active;
+  let lastCalfUp: string | undefined;
+  let lastCalfKind: "seated" | "standing" = "standing";
+  // one calf progression per calf week
+  const calfUpThisWeek = (d: string) => !!lastCalfUp && lastCalfUp >= addDays(d, -((dow(d) + 6) % 7));
 
   let weekday = settings.weekdayStart;
   let weekend = settings.weekendStart;
@@ -107,8 +139,6 @@ export function replay(entries: Entry[], settings: Settings, through: string): {
   let standing = 0;
   const isoStack: number[] = [];
   let lastIsoChange = addDays(settings.planStart, -10);
-  let lastStepUp: string | undefined;
-  let lastSeatedUp: string | undefined;
   let legSinceSeatedUp = 0;
   let legSinceStandingUp = 0;
 
@@ -134,11 +164,12 @@ export function replay(entries: Entry[], settings: Settings, through: string): {
     // ---- leg-day sessions completed before today (for isotonic rules) ----
     const yesterday = map.get(addDays(d, -1));
     if (yesterday?.legDay && yesterday.date >= settings.planStart) {
+      const masked = !evidence(yesterday.date);
       // judged this morning
       if (st(d) === "red") {
         if (seated > settings.seatedStart) {
-          ev({ date: d, kind: "seated", from: `${seated}kg`, to: `${Math.max(settings.seatedStart, seated - 5)}kg`, why: "Red morning after a leg day", dir: -1 });
-          seated = Math.max(settings.seatedStart, seated - 5);
+          ev({ date: d, kind: "seated", from: `${seated}kg`, to: `${Math.max(settings.seatedStart, seated - settings.seatedIncrement)}kg`, why: "Red morning after a leg day", dir: -1 });
+          seated = Math.max(settings.seatedStart, seated - settings.seatedIncrement);
         }
         if (standing > 0) {
           ev({ date: d, kind: "standing", from: STANDING_NAMES(standing), to: STANDING_NAMES(standing - 1), why: "Red morning after a leg day", dir: -1 });
@@ -146,6 +177,8 @@ export function replay(entries: Entry[], settings: Settings, through: string): {
         }
         legSinceSeatedUp = 0;
         legSinceStandingUp = 0;
+      } else if (masked) {
+        // doesn't count either way
       } else if (tolerated(yesterday)) {
         legSinceSeatedUp++;
         legSinceStandingUp++;
@@ -169,62 +202,74 @@ export function replay(entries: Entry[], settings: Settings, through: string): {
       const mon = map.get(d)?.morningPain;
       const fri = map.get(addDays(d, -3))?.morningPain;
       const weekendCost = mon != null && fri != null && mon > fri;
-      const seatedLock = lastSeatedUp && daysBetween(lastSeatedUp, d) < 7;
+      const win14 = Array.from({ length: 14 }, (_, i) => addDays(d, -i)).filter((x) => x >= settings.planStart);
+      const ss14 = win14.map(st).filter(Boolean) as Status[];
+      const reds14 = ss14.filter((s) => s === "red").length;
+      const stable = win14.length >= 14 && win14.every(evidence) && ss14.length >= 10 && reds14 === 0;
 
       if (reds > 0 && weekday > settings.weekdayStart) {
         const to = Math.max(settings.weekdayStart, weekday - settings.stepIncrement);
         ev({ date: d, kind: "steps", from: weekday.toLocaleString(), to: to.toLocaleString(), why: `${reds} red day${reds > 1 ? "s" : ""} last week`, dir: -1 });
         weekday = to;
         if (weekend > settings.weekendStart) weekend = Math.max(settings.weekendStart, weekend - settings.stepIncrement);
-      } else if (ss.length >= 5 && reds === 0 && ambers <= 1 && !hold.active && !seatedLock && !weekendCost && wk.length >= 3 && avg >= weekday * 0.9) {
+      } else if (weekKind(settings, d) === "steps" && stable && ambers <= 1 && !hold.active && !weekendCost && wk.length >= 3 && avg >= weekday * 0.9) {
         if (weekday < weekend) {
           const to = Math.min(weekend, weekday + settings.stepIncrement);
-          ev({ date: d, kind: "steps", from: weekday.toLocaleString(), to: to.toLocaleString(), why: "Green week at target", dir: 1 });
+          ev({ date: d, kind: "steps", from: weekday.toLocaleString(), to: to.toLocaleString(), why: "2 weeks without a red, last week green, at target", dir: 1 });
           weekday = to;
-          lastStepUp = d;
+
         } else if (weekday < settings.goalSteps) {
           const to = Math.min(settings.goalSteps, weekday + settings.stepIncrement);
           ev({ date: d, kind: "steps", from: weekday.toLocaleString(), to: `${to.toLocaleString()} (all days)`, why: "Green week; weekdays caught up with weekends", dir: 1 });
           weekday = to;
           weekend = Math.max(weekend, to);
-          lastStepUp = d;
+
         }
       }
     }
 
     // ---- isometrics ----
     if (today === "red" && iso > settings.isoStart) {
-      const to = isoStack.pop() ?? Math.max(settings.isoStart, iso - 5);
+      const to = isoStack.pop() ?? Math.max(settings.isoStart, iso - settings.isoIncrement);
       ev({ date: d, kind: "iso", from: `${iso}kg`, to: `${to}kg`, why: "Red morning", dir: -1 });
       iso = to;
       lastIsoChange = d;
     } else if (
       !hold.active &&
-      daysBetween(lastIsoChange, d) >= 3 &&
-      [1, 2, 3].every((i) => {
+      !isConsolidation(settings, d) &&
+      iso + settings.isoIncrement <= settings.isoMax &&
+      daysBetween(lastIsoChange, d) >= settings.isoGreenDays &&
+      Array.from({ length: settings.isoGreenDays }, (_, k) => k + 1).every((i) => {
         const x = addDays(d, -i);
-        return x >= settings.planStart && st(x) === "green" && map.get(x)?.isoDone;
+        return evidence(x) && st(x) === "green" && map.get(x)?.isoDone;
       }) &&
       today !== "amber"
     ) {
       isoStack.push(iso);
-      ev({ date: d, kind: "iso", from: `${iso}kg`, to: `${iso + 5}kg`, why: "3 green days with holds done", dir: 1 });
-      iso += 5;
+      ev({ date: d, kind: "iso", from: `${iso}kg`, to: `${iso + settings.isoIncrement}kg`, why: `${settings.isoGreenDays} green days with holds done`, dir: 1 });
+      iso += settings.isoIncrement;
       lastIsoChange = d;
     }
 
     // ---- isotonics: progress on a scheduled leg day ----
-    if (settings.legDays.includes(dow(d)) && !hold.active && today !== "red") {
-      const stepLock = lastStepUp && daysBetween(lastStepUp, d) < 7;
-      if (legSinceSeatedUp >= 2 && !stepLock) {
-        ev({ date: d, kind: "seated", from: `${seated}kg`, to: `${seated + 5}kg`, why: "2 leg days tolerated", dir: 1 });
-        seated += 5;
-        lastSeatedUp = d;
+    if (settings.legDays.includes(dow(d)) && !hold.active && today !== "red" && today !== "amber" && weekKind(settings, d) === "calves" && !calfUpThisWeek(d)) {
+      const need = settings.sessionsToProgress;
+      const seatedReady = legSinceSeatedUp >= need;
+      const standingReady = legSinceStandingUp >= need && standing < 8;
+      const pick: "seated" | "standing" | undefined =
+        seatedReady && standingReady ? (lastCalfKind === "seated" ? "standing" : "seated") : seatedReady ? "seated" : standingReady ? "standing" : undefined;
+      if (pick === "seated") {
+        ev({ date: d, kind: "seated", from: `${seated}kg`, to: `${seated + settings.seatedIncrement}kg`, why: `${need} leg days tolerated`, dir: 1 });
+        seated += settings.seatedIncrement;
         legSinceSeatedUp = 0;
-      } else if (legSinceStandingUp >= 2 && !stepLock && standing < 6) {
-        ev({ date: d, kind: "standing", from: STANDING_NAMES(standing), to: STANDING_NAMES(standing + 1), why: "2 leg days tolerated", dir: 1 });
+        lastCalfUp = d;
+        lastCalfKind = "seated";
+      } else if (pick === "standing") {
+        ev({ date: d, kind: "standing", from: STANDING_NAMES(standing), to: STANDING_NAMES(standing + 1), why: `${need} leg days tolerated`, dir: 1 });
         standing += 1;
         legSinceStandingUp = 0;
+        lastCalfUp = d;
+        lastCalfKind = "standing";
       }
     }
 
@@ -420,6 +465,14 @@ export function planFor(entries: Entry[], settings: Settings, date: string): { p
         });
     }
   }
+
+  const wk = weekKind(settings, date);
+  if (wk === "hold")
+    alerts.push({ id: "week", tone: "info", title: "Hold week", detail: `Every ${settings.consolidateEvery}th week nothing progresses. Same targets; let the tendon catch up.` });
+  else if (wk === "steps")
+    alerts.push({ id: "week", tone: "info", title: "Steps week", detail: "Steps can step up on Monday if the last 2 weeks earned it. Calf loads stay put this week." });
+  else if (wk === "calves")
+    alerts.push({ id: "week", tone: "info", title: "Calf week", detail: "One calf progression is allowed on a leg day this week if earned. Steps stay put." });
 
   // ---- Monday ----
   if (dow(date) === 1) {
