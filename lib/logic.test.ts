@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { dayStatus, addDays, baselineFor } from "./logic.ts";
-import { planFor, nsaidHold, doseOn, clearDays, rescueCourse } from "./plan.ts";
-import { DEFAULT_SETTINGS, type Entry, type Settings } from "./types.ts";
+import { dayStatus, addDays, baselineFor, trendFor, heavySteps } from "./logic.ts";
+import { planFor } from "./plan.ts";
+import { DEFAULT_SETTINGS, normaliseSettings, type Entry, type Settings } from "./types.ts";
 
 const days = (start: string, n: number, f: (d: string, i: number) => Partial<Entry>): Entry[] =>
   Array.from({ length: n }, (_, i) => {
@@ -10,13 +10,9 @@ const days = (start: string, n: number, f: (d: string, i: number) => Partial<Ent
     return { date: d, ...f(d, i) };
   });
 
-const noCourse: Settings = { ...DEFAULT_SETTINGS, planStart: "2026-11-02", courses: [], legDays: [2, 4] };
-const greenDay = (d: string): Partial<Entry> => ({
-  morningPain: 2,
-  eveningPain: 2,
-  steps: new Date(d).getUTCDay() % 6 === 0 ? 10000 : 6200,
-  isoDone: true,
-});
+// Mon 2 Nov 2026 start, leg days Mon/Sat, no NSAID
+const S: Settings = { ...DEFAULT_SETTINGS, planStart: "2026-11-02", lastNsaid: undefined };
+const green = (): Partial<Entry> => ({ morningPain: 2, eveningPain: 2, steps: 9000 });
 
 test("baseline needs 3 days and uses median", () => {
   const e = days("2026-10-01", 4, (_, i) => ({ morningPain: [2, 3, 9, 3][i] }));
@@ -24,124 +20,107 @@ test("baseline needs 3 days and uses median", () => {
   assert.equal(baselineFor("2026-10-03", e).morning, undefined);
 });
 
-test("status: +1 amber, +2 red, during >3 amber", () => {
+test("status: +1 amber, +2 red, absolute threshold, training pain, evening rise, flare", () => {
   const base = days("2026-10-01", 7, () => ({ morningPain: 2, eveningPain: 2 }));
-  assert.equal(dayStatus({ date: "2026-10-08", morningPain: 2 }, base)!.status, "green");
-  assert.equal(dayStatus({ date: "2026-10-08", morningPain: 3 }, base)!.status, "amber");
-  assert.equal(dayStatus({ date: "2026-10-08", morningPain: 4 }, base)!.status, "red");
-  assert.equal(dayStatus({ date: "2026-10-08", morningPain: 2, isoPain: 4 }, base)!.status, "amber");
+  const s = (p: Partial<Entry>) => dayStatus({ date: "2026-10-08", ...p }, base)!.status;
+  assert.equal(s({ morningPain: 2 }), "green");
+  assert.equal(s({ morningPain: 3 }), "amber");
+  assert.equal(s({ morningPain: 4 }), "red");
+  assert.equal(s({ morningPain: 2, trainingPain: 4 }), "amber");
+  assert.equal(s({ morningPain: 2, trainingPain: 6 }), "red");
+  assert.equal(s({ morningPain: 2, eveningPain: 4 }), "amber");
+  assert.equal(s({ morningPain: 1, flare: true }), "red");
+  const high = days("2026-10-01", 7, () => ({ morningPain: 5 }));
+  assert.equal(dayStatus({ date: "2026-10-08", morningPain: 5 }, high)!.status, "red");
 });
 
-test("default taper: doses and hold until 1 Nov", () => {
-  assert.deepEqual([doseOn(DEFAULT_SETTINGS, "2026-10-22")!.mg, doseOn(DEFAULT_SETTINGS, "2026-10-22")!.perDay], [50, 3]);
-  assert.equal(doseOn(DEFAULT_SETTINGS, "2026-10-23")!.mg, 25);
-  assert.equal(doseOn(DEFAULT_SETTINGS, "2026-10-27")!.perDay, 1);
-  assert.equal(doseOn(DEFAULT_SETTINGS, "2026-10-29"), null);
-  assert.equal(nsaidHold(DEFAULT_SETTINGS, "2026-11-01").active, true);
-  assert.equal(nsaidHold(DEFAULT_SETTINGS, "2026-11-02").active, false);
+test("trend compares this week with last week", () => {
+  const e = days("2026-11-02", 14, (_, i) => ({ morningPain: i < 7 ? 2 : 3 }));
+  assert.equal(trendFor("2026-11-15", e)!.dir, "rising");
+  const f = days("2026-11-02", 14, (_, i) => ({ morningPain: i < 7 ? 3 : 2 }));
+  assert.equal(trendFor("2026-11-15", f)!.dir, "falling");
 });
 
-test("no progression during the taper even when green", () => {
-  const e = days("2026-10-19", 14, greenDay);
-  const { plan, events } = planFor(e, DEFAULT_SETTINGS, "2026-11-01");
-  assert.equal(events.filter((x) => x.dir > 0).length, 0);
-  assert.equal(plan.iso.load, 20);
-  assert.equal(plan.steps.target, 10000); // Sunday
+test("heavy steps flagged relative to usual", () => {
+  const e = [...days("2026-11-02", 10, () => ({ steps: 8000 })), { date: "2026-11-12", steps: 11000 }];
+  assert.ok(heavySteps("2026-11-12", e));
+  assert.equal(heavySteps("2026-11-11", e), undefined);
 });
 
-test("isometric load climbs after 5 green days (5kg in the light range), not before", () => {
-  const e = days("2026-11-02", 6, greenDay);
-  assert.equal(planFor(e, noCourse, "2026-11-06").plan.iso.load, 20);
-  assert.equal(planFor(e, noCourse, "2026-11-07").plan.iso.load, 25);
+test("isometrics assumed done: climb after 5 green days without any logging of holds", () => {
+  const e = days("2026-11-02", 7, green);
+  assert.equal(planFor(e, S, "2026-11-06").plan.iso.load, 20);
+  assert.equal(planFor(e, S, "2026-11-07").plan.iso.load, 25); // +5 in light range
 });
 
-test("steps need 2 clean weeks and a steps week, then +500; weekend unchanged", () => {
-  const e = days("2026-11-02", 15, greenDay);
-  assert.equal(planFor(e, noCourse, "2026-11-09").plan.state.weekday, 6000); // only 1 week
-  const { plan } = planFor(e, noCourse, "2026-11-16");
-  assert.equal(plan.state.weekday, 6500);
-  assert.equal(plan.state.weekend, 10000);
-  assert.equal(plan.steps.target, 6500);
+test("no progression before morning pain is logged that day", () => {
+  const e = [...days("2026-11-02", 5, green), { date: "2026-11-07", steps: 8000 }];
+  assert.equal(planFor(e, S, "2026-11-07").plan.iso.load, 20);
 });
 
-test("consolidation week every 4th week blocks progression", () => {
-  const e = days("2026-11-02", 40, (d) => ({
-    ...greenDay(d),
-    ...([2, 4].includes(new Date(d).getUTCDay()) ? { legDay: true, isotonicPain: 2 } : {}),
-  }));
-  const { events } = planFor(e, noCourse, "2026-12-11");
-  const inWeek4 = events.filter((x) => x.dir > 0 && x.date >= "2026-11-23" && x.date <= "2026-11-29");
-  assert.equal(inWeek4.length, 0);
-  assert.ok(events.some((x) => x.dir > 0 && x.date >= "2026-11-30")); // resumes after
+test("anti-inflammatory washout masks evidence", () => {
+  const e = days("2026-11-02", 10, green);
+  const s = { ...S, lastNsaid: "2026-11-03" }; // masked through 7 Nov
+  assert.equal(planFor(e, s, "2026-11-11").plan.iso.load, 20);
+  assert.equal(planFor(e, s, "2026-11-08").plan.alerts.some((a) => a.id === "nsaid"), false);
 });
 
-test("old v1 settings adopt conservative defaults", async () => {
-  const { normaliseSettings } = await import("./types.ts");
-  const s = normaliseSettings({ stepIncrement: 750, painThreshold: 6, weekdayStart: 6000 });
-  assert.equal(s.stepIncrement, 500);
-  assert.equal(s.painThreshold, 5);
-  assert.equal(normaliseSettings({ version: 2, isoMax: 60 }).isoMax, 100);
-  assert.equal(normaliseSettings({ version: 3, isoMax: 80 }).isoMax, 80);
-  assert.deepEqual(normaliseSettings({ version: 3, legDays: [2, 4] }).legDays, [1, 6]);
-  assert.deepEqual(normaliseSettings({ version: 3, legDays: [3, 5] }).legDays, [3, 5]);
-  assert.deepEqual(DEFAULT_SETTINGS.legDays, [1, 6]);
+test("red morning returns isometrics to the previous load", () => {
+  const e = [...days("2026-11-02", 6, green), { date: "2026-11-08", morningPain: 5 }];
+  assert.equal(planFor(e, S, "2026-11-07").plan.iso.load, 25);
+  const p = planFor(e, S, "2026-11-08").plan;
+  assert.equal(p.iso.load, 20);
+  assert.equal(p.iso.effort, "30–50%");
 });
 
-test("red morning: steps back to baseline, iso drops, calf work skipped", () => {
-  const e = days("2026-11-02", 8, greenDay);
-  // Tue 10 Nov red (a leg day)
-  e.push({ date: "2026-11-10", morningPain: 6 });
-  const { plan } = planFor(e, noCourse, "2026-11-10");
-  assert.equal(plan.status, "red");
-  assert.equal(plan.steps.target, 6000);
-  assert.ok(plan.iso.load < 30);
-  assert.equal(plan.calves?.skip, true);
+test("calves: 3 tolerated sessions then one step; leg days default to done as prescribed", () => {
+  // Mon/Sat leg days from 2 Nov: 2, 7, 9, 14 (Mon 16 is the next)
+  const e = days("2026-11-02", 15, green);
+  const p14 = planFor(e, S, "2026-11-14").plan;
+  assert.equal(p14.calves!.seated.load, 20); // 3 banked, but the isometric step the day before blocks a calf step within 2 days
+  const p16 = planFor(e, S, "2026-11-16");
+  const calfUps = p16.events.filter((x) => (x.kind === "seated" || x.kind === "standing") && x.dir > 0);
+  assert.equal(calfUps.length, 1);
 });
 
-test("pain threshold: rescue offered only after 7 clear days", () => {
-  const e: Entry[] = [{ date: "2026-11-03", morningPain: 7 }];
-  const early = planFor(e, DEFAULT_SETTINGS, "2026-11-03").plan.alerts.find((a) => a.id === "pain")!;
-  assert.equal(early.action, undefined); // last dose 28 Oct → 5 clear days
-  const e2: Entry[] = [{ date: "2026-11-06", morningPain: 7 }];
-  const later = planFor(e2, DEFAULT_SETTINGS, "2026-11-06").plan.alerts.find((a) => a.id === "pain")!;
-  assert.equal(later.action, "start-rescue");
-  assert.equal(clearDays(DEFAULT_SETTINGS, [], "2026-11-05"), 7);
+test("red morning after a leg session steps calves back", () => {
+  const e = [...days("2026-11-02", 15, green)];
+  const ups = planFor(e, S, "2026-11-16").plan.state.seated;
+  assert.ok(ups > 20);
+  const e2 = [...e, { date: "2026-11-16", morningPain: 2, training: "done" as const }, { date: "2026-11-17", morningPain: 5 }];
+  assert.equal(planFor(e2, S, "2026-11-17").plan.state.seated, 20);
 });
 
-test("two rescue courses in 4 weeks escalates", () => {
-  const s: Settings = { ...noCourse, courses: [rescueCourse("2026-11-01"), rescueCourse("2026-11-12")] };
-  const a = planFor([{ date: "2026-11-25", morningPain: 7 }], s, "2026-11-25").plan.alerts.find((x) => x.id === "pain")!;
-  assert.match(a.title, /escalate/);
+test("skipped session doesn't count toward calves", () => {
+  const e = days("2026-11-02", 15, (d) => ({ ...green(), training: [1, 6].includes(new Date(d).getUTCDay()) ? ("skipped" as const) : undefined }));
+  const ev = planFor(e, S, "2026-11-16").events;
+  assert.equal(ev.filter((x) => (x.kind === "seated" || x.kind === "standing") && x.dir > 0).length, 0);
 });
 
-test("seated raise progresses after three tolerated leg days (5kg in the light range)", () => {
-  const e = days("2026-11-02", 10, (d) => ({
-    ...greenDay(d),
-    ...([2, 4].includes(new Date(d).getUTCDay()) ? { legDay: true, isotonicPain: 2 } : {}),
-  }));
-  // Tue 3, Thu 5, Tue 10 tolerated → progress on Thu 12
-  const { events } = planFor(e, noCourse, "2026-11-12");
-  const up = events.find((x) => x.kind === "seated");
-  assert.equal(up?.date, "2026-11-12");
-  assert.equal(up?.to, "25kg");
+test("flare: iso down ~20%, calves down, no loaded calves, settles after 2 good mornings", () => {
+  const e: Entry[] = [...days("2026-11-02", 15, green)];
+  const before = planFor(e, S, "2026-11-16").plan.state;
+  const e2 = [...e, { date: "2026-11-17", morningPain: 4, flare: true }, { date: "2026-11-18", morningPain: 3 }];
+  const p = planFor(e2, S, "2026-11-17").plan;
+  assert.ok(p.state.iso < before.iso);
+  assert.equal(p.state.flare, true);
+  assert.ok(p.alerts.some((a) => a.id === "flare"));
+  const e3 = [...e2, { date: "2026-11-19", morningPain: 2 }, { date: "2026-11-20", morningPain: 2 }];
+  assert.equal(planFor(e3, S, "2026-11-20").plan.state.flare, false);
+  // still no progression within a week of settling
+  const e4 = [...e3, ...days("2026-11-21", 5, green)];
+  const ups = planFor(e4, S, "2026-11-25").events.filter((x) => x.dir > 0 && x.date > "2026-11-17");
+  assert.equal(ups.length, 0);
 });
 
-test("steps and calf progressions never land in the same week", () => {
-  const e = days("2026-11-02", 60, (d) => ({
-    ...greenDay(d),
-    ...([2, 4].includes(new Date(d).getUTCDay()) ? { legDay: true, isotonicPain: 2 } : {}),
-  }));
-  const { events } = planFor(e, noCourse, "2026-12-31");
-  const monday = (d: string) => addDays(d, -((new Date(d).getUTCDay() + 6) % 7));
-  const ups = events.filter((x) => x.dir > 0 && x.kind !== "iso");
-  const byWeek = new Map<string, Set<string>>();
-  for (const u of ups) {
-    const k = monday(u.date);
-    byWeek.set(k, (byWeek.get(k) ?? new Set()).add(u.kind === "steps" ? "steps" : "calves"));
-  }
-  assert.ok(ups.some((u) => u.kind === "steps") && ups.some((u) => u.kind !== "steps"));
-  for (const [w, kinds] of byWeek) assert.equal(kinds.size, 1, `week of ${w}`);
-  // at most one calf progression per week
-  const calfWeeks = ups.filter((u) => u.kind !== "steps").map((u) => monday(u.date));
-  assert.equal(new Set(calfWeeks).size, calfWeeks.length);
+test("rising trend scales back once and blocks progression", () => {
+  const e = [...days("2026-11-02", 14, green), ...days("2026-11-16", 7, () => ({ morningPain: 3, eveningPain: 3 }))];
+  const { events } = planFor(e, S, "2026-11-22");
+  assert.ok(events.some((x) => x.dir < 0 && /trending up/.test(x.why)));
+});
+
+test("settings v4 → v5: last NSAID date from the old taper", () => {
+  const s = normaliseSettings({ version: 4, planStart: "2026-10-19", courses: [{ steps: [{ from: "2026-10-19", to: "2026-10-22" }, { from: "2026-10-27", to: "2026-10-28" }] }] });
+  assert.equal(s.lastNsaid, "2026-10-28");
+  assert.equal("courses" in s, false);
 });

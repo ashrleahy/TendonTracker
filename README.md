@@ -1,6 +1,6 @@
 # Tendon Tracker
 
-Daily log for Achilles rehab: pain monitoring (Silbernagel model), steps against a progressing target, isometric and seated-raise loading, and a diclofenac washout hold. The app turns each day green/amber/red and suggests when to progress, hold or drop back.
+Daily log for Achilles rehab. Four entries a day (pain at start of day, total steps, training, pain at end of day) plus an exacerbation section. The app turns each day green/amber/red and progresses or scales back isometric and calf loads from pain scores and the pain trend.
 
 ## Deploy (Vercel)
 
@@ -14,14 +14,15 @@ Without `DATABASE_URL` the app still works, storing everything in the browser (e
 
 ## How the plan works
 
-The Today screen is a prescription, recomputed from your log each day (history is replayed from the plan start, so targets are earned rather than set):
+Loads are replayed from the log each day, so they're earned rather than set.
 
-- **Status:** first-steps (and evening) pain vs the median of the previous 7 days. Same or lower = green, +1 = amber, +2 = red. Pain over 3/10 during loading or walking = at least amber.
-- **Weeks** alternate from the first Monday after the diclofenac hold: steps week, calf week, steps week, hold week (every 4th). One thing changes per week; diclofenac days never count as evidence.
-- **Steps:** +500 weekdays on a steps-week Monday after 2 weeks with no red, last week ≤1 amber, at target, Monday no worse than Friday. Weekdays climb to the weekend baseline, then all days move to the goal. Any red drops weekdays back; a red morning drops that day to baseline.
-- **Isometrics:** +5kg below 50kg, then +2.5kg, after 5 green days with holds done, ceiling 100kg; red morning returns to the previous load.
-- **Calves (leg days Mon/Sat by default):** in a calf week, after 3 tolerated sessions (pain ≤3/10, green next morning), seated raise +5kg below 50kg then +2.5kg, or standing raise up a level, taking turns. Red morning after a leg day steps both back.
-- **Diclofenac:** taper is editable in Plan. Nothing progresses until 4 days after the last dose. Pain at/above the threshold (default 5/10) or two red days running → offload advice; a 3-day 50mg × 3 rescue course is offered only after 7 clear days; escalation after two rescue courses in 4 weeks, three days over threshold on an NSAID, or still mostly amber/red 1–3 weeks after stopping.
+- **Status:** red = flare logged, morning at/over threshold (default 5/10), morning 2+ above the 7-day median, or training pain over 5. Amber = morning +1, training pain 4-5, or evening 2+ above the morning.
+- **Trend:** mean morning pain this week vs last. Up 1+ = rising: no progressions, and loads drop a step at most once a week until it turns.
+- **Isometrics:** assumed done daily (no logging). +5kg below 50kg, then +2.5kg, after 5 green days in a row with a green morning and a non-rising trend; ceiling 100kg. Red morning: previous load.
+- **Calves (leg days Mon/Sat):** assumed done as prescribed unless marked lighter/skipped. Tolerated = training pain 3 or less and green next morning. After 3, one exercise steps up (seated +kg or standing up a level, alternating), max one a week, not within 2 days of an isometric step. Red morning after a session, or training pain over 5: both step back.
+- **Steps:** context only, no target. A day 25%+ over the 14-day median (and over 8k) is flagged heavy; a bad morning after a heavy day with no leg session doesn't hit calf loads.
+- **Flare:** isometrics down 20% (still daily, lighter), calves down a step and no loaded calf work until 2 mornings back at the pre-flare usual; no progressions for a week after. Review if a flare runs 10+ days, 2 flares in 4 weeks, or 5 of 7 days amber/red.
+- **Anti-inflammatories:** days up to 4 after the last dose (Plan setting, or any logged dose) don't count as evidence.
 
 ## Dev
 

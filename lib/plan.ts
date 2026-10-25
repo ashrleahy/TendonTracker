@@ -1,82 +1,22 @@
-import type { Entry, Settings, Status, Course, DoseStep } from "./types.ts";
-import { addDays, daysBetween, dayStatus, dow, isWeekend, prettyDate } from "./logic.ts";
+import type { Entry, Settings, Status, Training } from "./types.ts";
+import {
+  addDays,
+  baselineFor,
+  daysBetween,
+  dayStatus,
+  dow,
+  heavySteps,
+  prettyDate,
+  trainingPainOf,
+  trendFor,
+  typicalSteps,
+  type Trend,
+} from "./logic.ts";
 
 // ======================================================================
-// Diclofenac
+// Loads
 // ======================================================================
-export const courseStart = (c: Course) => c.steps.reduce((m, s) => (s.from < m ? s.from : m), c.steps[0]?.from ?? "9999-12-31");
-export const courseEnd = (c: Course) => c.steps.reduce((m, s) => (s.to > m ? s.to : m), c.steps[0]?.to ?? "0000-01-01");
-
-export function doseOn(settings: Settings, date: string): (DoseStep & { course: Course }) | null {
-  for (const c of settings.courses) for (const s of c.steps) if (s.from <= date && date <= s.to) return { ...s, course: c };
-  return null;
-}
-
-/** Progressions hold from a course's first day until 4 days after its last dose. */
-export function nsaidHold(settings: Settings, date: string): { active: boolean; until?: string } {
-  let until: string | undefined;
-  for (const c of settings.courses) {
-    if (!c.steps.length) continue;
-    const u = addDays(courseEnd(c), 4);
-    if (courseStart(c) <= date && date <= u && (!until || u > until)) until = u;
-  }
-  return { active: !!until, until };
-}
-
-/** Most recent day before `date` with a dose, scheduled or logged. */
-export function lastDoseBefore(settings: Settings, entries: Entry[], date: string): string | undefined {
-  let last: string | undefined;
-  for (const c of settings.courses)
-    for (const s of c.steps) {
-      if (s.from >= date) continue;
-      const end = s.to < date ? s.to : addDays(date, -1);
-      if (!last || end > last) last = end;
-    }
-  for (const e of entries) if (e.date < date && ((e.doses ?? 0) > 0 || e.nsaid) && (!last || e.date > last)) last = e.date;
-  return last;
-}
-
-export function clearDays(settings: Settings, entries: Entry[], date: string): number {
-  const last = lastDoseBefore(settings, entries, date);
-  return last ? daysBetween(last, date) - 1 : 999;
-}
-
-export const RESCUE_DAYS = 3;
-export const CLEAR_DAYS_REQUIRED = 7;
-
-export function rescueCourse(start: string): Course {
-  return {
-    id: `rescue-${start}`,
-    kind: "rescue",
-    steps: [{ from: start, to: addDays(start, RESCUE_DAYS - 1), mg: 50, perDay: 3 }],
-  };
-}
-
-// ======================================================================
-// Replay: targets evolve day by day from history
-// ======================================================================
-export interface PlanEvent {
-  date: string;
-  kind: "steps" | "iso" | "seated" | "standing" | "reset";
-  from: string;
-  to: string;
-  why: string;
-  dir: 1 | -1 | 0;
-}
-
-export interface DayState {
-  date: string;
-  weekday: number;
-  weekend: number;
-  iso: number;
-  seated: number;
-  standingLevel: number; // 0 bilateral BW, 1 single-leg BW, 2+ single-leg + (level-1)*2.5kg
-  hold: boolean;
-  holdUntil?: string;
-  status?: Status;
-}
-
-const STANDING_NAMES = (lvl: number) =>
+export const STANDING_NAMES = (lvl: number) =>
   lvl <= 0 ? "Double-leg, bodyweight" : lvl === 1 ? "Single-leg, bodyweight" : `Single-leg + ${(lvl - 1) * 2.5}kg`;
 
 export function standingRx(level: number) {
@@ -91,196 +31,263 @@ export function seatedScheme(load: number) {
   return { sets: 4, reps: 8 };
 }
 
-function anchorMonday(settings: Settings): string {
-  // first Monday on/after plan start that is clear of every diclofenac hold
-  let anchor = settings.planStart;
-  for (let i = 0; i < 400 && (dow(anchor) !== 1 || nsaidHold(settings, anchor).active); i++) anchor = addDays(anchor, 1);
-  return anchor;
-}
-
-export type WeekKind = "pre" | "steps" | "calves" | "hold";
-
-/**
- * Weeks run Monday–Sunday from the first Monday after the diclofenac hold.
- * Every Nth week is a hold week; the others alternate steps week / calf week,
- * so only one thing changes in any week and both get regular turns.
- */
-export function weekKind(settings: Settings, date: string): WeekKind {
-  const anchor = anchorMonday(settings);
-  if (date < anchor) return "pre";
-  const w = Math.floor(daysBetween(anchor, date) / 7);
-  const n = settings.consolidateEvery;
-  if (n >= 2 && w % n === n - 1) return "hold";
-  const active = n >= 2 ? w - Math.floor((w + 1) / n) : w; // non-hold weeks before this one
-  return active % 2 === 0 ? "steps" : "calves";
-}
-
-export const isConsolidation = (settings: Settings, date: string) => weekKind(settings, date) === "hold";
-
-/** Light range moves in double steps; the tendon gating is unchanged. */
+/** Light range moves in double steps. */
 export const stepFor = (load: number, inc: number, lightKg: number) => (load < lightKg ? inc * 2 : inc);
+/** Step size when coming down from `load` (the step that got you there). */
+const stepDown = (load: number, inc: number, lightKg: number) => (load <= lightKg ? inc * 2 : inc);
+const round25 = (x: number) => Math.round(x / 2.5) * 2.5;
 
-export function replay(entries: Entry[], settings: Settings, through: string): { days: DayState[]; events: PlanEvent[] } {
+// ======================================================================
+// Replay: loads evolve day by day from the log
+// ======================================================================
+export interface PlanEvent {
+  date: string;
+  kind: "iso" | "seated" | "standing" | "reset" | "flare";
+  from: string;
+  to: string;
+  why: string;
+  dir: 1 | -1 | 0;
+}
+
+export interface DayState {
+  date: string;
+  iso: number;
+  seated: number;
+  standingLevel: number;
+  status?: Status; // full day status (morning, training, evening, flare)
+  morning?: Status; // morning-only status, drives today's decisions
+  masked: boolean; // anti-inflammatory washout: doesn't count as evidence
+  flare: boolean;
+  flareStart?: string;
+  flareTarget?: number; // morning score that counts as settled
+  legDay: boolean;
+  skipCalves: boolean;
+  training?: Training; // resolved session for the day
+  isoBanked: number; // green days counted toward the next isometric step
+  sessionsBanked: number; // tolerated sessions toward the next calf step
+  trend?: Trend;
+}
+
+export function isScheduledLegDay(settings: Settings, date: string) {
+  return settings.legDays.includes(dow(date));
+}
+
+const hasData = (e: Entry) => e.morningPain != null || e.eveningPain != null || e.steps != null || trainingPainOf(e) != null;
+
+export function replay(entries: Entry[], settings: Settings, through: string) {
   const map = new Map(entries.map((e) => [e.date, e]));
-  const statusCache = new Map<string, Status | undefined>();
+  const th = settings.painThreshold;
+  const cache = new Map<string, Status | undefined>();
   const st = (d: string) => {
-    if (!statusCache.has(d)) statusCache.set(d, dayStatus(map.get(d), entries)?.status);
-    return statusCache.get(d);
+    if (!cache.has(d)) cache.set(d, dayStatus(map.get(d), entries, th)?.status);
+    return cache.get(d);
   };
-  const tolerated = (e: Entry) => (e.isotonicPain ?? 0) <= 3 && st(addDays(e.date, 1)) === "green";
-  // days on (or just off) diclofenac are masked, so they never count as evidence for progressing
-  const evidence = (d: string) => d >= settings.planStart && !nsaidHold(settings, d).active;
-  let lastCalfUp: string | undefined;
-  let lastCalfKind: "seated" | "standing" = "standing";
-  // one calf progression per calf week
-  const calfUpThisWeek = (d: string) => !!lastCalfUp && lastCalfUp >= addDays(d, -((dow(d) + 6) % 7));
+  const amSt = (d: string) => {
+    const e = map.get(d);
+    if (!e || (e.morningPain == null && !e.flare)) return undefined;
+    return dayStatus({ date: d, morningPain: e.morningPain, flare: e.flare }, entries, th)?.status;
+  };
+  const dosedNear = (d: string) =>
+    [0, 1, 2, 3, 4].some((i) => {
+      const e = map.get(addDays(d, -i));
+      return !!e && ((e.doses ?? 0) > 0 || !!e.nsaid);
+    });
+  const masked = (d: string) => d < settings.planStart || (!!settings.lastNsaid && d <= addDays(settings.lastNsaid, 4)) || dosedNear(d);
 
-  let weekday = settings.weekdayStart;
-  let weekend = settings.weekendStart;
   let iso = settings.isoStart;
   let seated = settings.seatedStart;
   let standing = 0;
   const isoStack: number[] = [];
-  let lastIsoChange = addDays(settings.planStart, -10);
-  let legSinceSeatedUp = 0;
-  let legSinceStandingUp = 0;
+  let lastIsoChange = addDays(settings.planStart, -30);
+  let lastCalfChange = addDays(settings.planStart, -30);
+  let lastDrop = addDays(settings.planStart, -30);
+  let sessions = 0;
+  let lastCalfKind: "seated" | "standing" = "standing";
+  let flare = false;
+  let flareStart: string | undefined;
+  let flareTarget = 2;
+  const flareStarts: string[] = [];
 
   const days: DayState[] = [];
   const events: PlanEvent[] = [];
   const ev = (e: PlanEvent) => events.push(e);
   const overrides = [...settings.overrides].sort((a, b) => (a.date < b.date ? -1 : 1));
+  const inc = settings.isoIncrement;
+  const sInc = settings.seatedIncrement;
+  const L = settings.lightKg;
 
-  if (through < settings.planStart) return { days, events };
+  const calvesDown = (d: string, why: string) => {
+    if (seated > settings.seatedStart) {
+      const to = Math.max(settings.seatedStart, seated - stepDown(seated, sInc, L));
+      ev({ date: d, kind: "seated", from: `${seated}kg`, to: `${to}kg`, why, dir: -1 });
+      seated = to;
+    }
+    if (standing > 0) {
+      ev({ date: d, kind: "standing", from: STANDING_NAMES(standing), to: STANDING_NAMES(standing - 1), why, dir: -1 });
+      standing -= 1;
+    }
+    sessions = 0;
+  };
+  const isoBack = (d: string, why: string) => {
+    if (iso <= settings.isoStart) return;
+    const to = isoStack.pop() ?? Math.max(settings.isoStart, iso - stepDown(iso, inc, L));
+    ev({ date: d, kind: "iso", from: `${iso}kg`, to: `${to}kg`, why, dir: -1 });
+    iso = to;
+    lastIsoChange = d;
+  };
+
+  if (through < settings.planStart) return { days, events, flareStarts };
 
   for (let d = settings.planStart; d <= through; d = addDays(d, 1)) {
     for (const o of overrides.filter((o) => o.date === d)) {
-      if (o.weekday != null) weekday = o.weekday;
-      if (o.weekend != null) weekend = o.weekend;
       if (o.iso != null) iso = o.iso;
       if (o.seated != null) seated = o.seated;
-      ev({ date: d, kind: "reset", from: "", to: "manual", why: "Targets reset in Plan", dir: 0 });
+      if (o.standing != null) standing = o.standing;
+      isoStack.length = 0;
+      ev({ date: d, kind: "reset", from: "", to: "manual", why: "Loads reset in Plan", dir: 0 });
     }
 
-    const hold = nsaidHold(settings, d);
-    const today = st(d);
+    const e = map.get(d);
+    const am = amSt(d);
+    const isMasked = masked(d);
+    const prev = days[days.length - 1];
+    const yd = addDays(d, -1);
+    const trend = trendFor(d, entries);
+    const heavyY = heavySteps(yd, entries);
+    const stepsNote = heavyY ? ` (after ${heavyY.steps.toLocaleString()} steps, usual ${heavyY.typical.toLocaleString()})` : "";
+    let changedDown = false;
 
-    // ---- leg-day sessions completed before today (for isotonic rules) ----
-    const yesterday = map.get(addDays(d, -1));
-    if (yesterday?.legDay && yesterday.date >= settings.planStart) {
-      const masked = !evidence(yesterday.date);
-      // judged this morning
-      if (st(d) === "red") {
-        if (seated > settings.seatedStart) {
-          ev({ date: d, kind: "seated", from: `${seated}kg`, to: `${Math.max(settings.seatedStart, seated - settings.seatedIncrement)}kg`, why: "Red morning after a leg day", dir: -1 });
-          seated = Math.max(settings.seatedStart, seated - settings.seatedIncrement);
-        }
-        if (standing > 0) {
-          ev({ date: d, kind: "standing", from: STANDING_NAMES(standing), to: STANDING_NAMES(standing - 1), why: "Red morning after a leg day", dir: -1 });
-          standing -= 1;
-        }
-        legSinceSeatedUp = 0;
-        legSinceStandingUp = 0;
-      } else if (masked) {
-        // doesn't count either way
-      } else if (tolerated(yesterday)) {
-        legSinceSeatedUp++;
-        legSinceStandingUp++;
-      } else {
-        legSinceSeatedUp = 0;
-        legSinceStandingUp = 0;
+    // ---- yesterday's leg session, judged by this morning ----
+    if (prev && (prev.training === "done" || prev.training === "light")) {
+      const ye = map.get(yd);
+      const tp = ye ? trainingPainOf(ye) : undefined;
+      if (am === "red" && !e?.flare) {
+        calvesDown(d, `Red morning after a leg session${stepsNote}`);
+        changedDown = true;
+      } else if (tp != null && tp > 5) {
+        calvesDown(d, `Training pain ${tp}/10 yesterday`);
+        changedDown = true;
+      } else if (am === "green" && prev.training === "done" && !prev.masked && (tp == null || tp <= 3)) {
+        sessions++;
+      } else if (am === "amber" || (tp != null && tp > 3)) {
+        sessions = 0;
       }
     }
 
-    // ---- steps: weekly review on Mondays ----
-    if (dow(d) === 1 && daysBetween(settings.planStart, d) >= 7) {
-      const win = Array.from({ length: 7 }, (_, i) => addDays(d, -i));
-      const ss = win.map(st).filter(Boolean) as Status[];
-      const reds = ss.filter((s) => s === "red").length;
-      const ambers = ss.filter((s) => s === "amber").length;
-      const wk = win
-        .filter((x) => !isWeekend(x) && x !== d)
-        .map((x) => map.get(x)?.steps)
-        .filter((x): x is number => x != null);
-      const avg = wk.length ? wk.reduce((a, b) => a + b, 0) / wk.length : 0;
-      const mon = map.get(d)?.morningPain;
-      const fri = map.get(addDays(d, -3))?.morningPain;
-      const weekendCost = mon != null && fri != null && mon > fri;
-      const win14 = Array.from({ length: 14 }, (_, i) => addDays(d, -i)).filter((x) => x >= settings.planStart);
-      const ss14 = win14.map(st).filter(Boolean) as Status[];
-      const reds14 = ss14.filter((s) => s === "red").length;
-      const stable = win14.length >= 14 && win14.every(evidence) && ss14.length >= 10 && reds14 === 0;
-
-      if (reds > 0 && weekday > settings.weekdayStart) {
-        const to = Math.max(settings.weekdayStart, weekday - settings.stepIncrement);
-        ev({ date: d, kind: "steps", from: weekday.toLocaleString(), to: to.toLocaleString(), why: `${reds} red day${reds > 1 ? "s" : ""} last week`, dir: -1 });
-        weekday = to;
-        if (weekend > settings.weekendStart) weekend = Math.max(settings.weekendStart, weekend - settings.stepIncrement);
-      } else if (weekKind(settings, d) === "steps" && stable && ambers <= 1 && !hold.active && !weekendCost && wk.length >= 3 && avg >= weekday * 0.9) {
-        if (weekday < weekend) {
-          const to = Math.min(weekend, weekday + settings.stepIncrement);
-          ev({ date: d, kind: "steps", from: weekday.toLocaleString(), to: to.toLocaleString(), why: "2 weeks without a red, last week green, at target", dir: 1 });
-          weekday = to;
-
-        } else if (weekday < settings.goalSteps) {
-          const to = Math.min(settings.goalSteps, weekday + settings.stepIncrement);
-          ev({ date: d, kind: "steps", from: weekday.toLocaleString(), to: `${to.toLocaleString()} (all days)`, why: "Green week; weekdays caught up with weekends", dir: 1 });
-          weekday = to;
-          weekend = Math.max(weekend, to);
-
-        }
-      }
-    }
-
-    // ---- isometrics ----
-    if (today === "red" && iso > settings.isoStart) {
-      const to = isoStack.pop() ?? Math.max(settings.isoStart, iso - settings.isoIncrement);
-      ev({ date: d, kind: "iso", from: `${iso}kg`, to: `${to}kg`, why: "Red morning", dir: -1 });
+    // ---- exacerbation ----
+    const flareOnset = !!e?.flare && !flare;
+    if (flareOnset) {
+      flare = true;
+      flareStart = d;
+      flareStarts.push(d);
+      const b = baselineFor(d, entries).morning;
+      flareTarget = b ?? map.get(yd)?.morningPain ?? 2;
+      const to = Math.max(settings.isoStart, round25(iso * 0.8));
+      if (to < iso) ev({ date: d, kind: "iso", from: `${iso}kg`, to: `${to}kg`, why: "Flare: isometrics down ~20%", dir: -1 });
       iso = to;
+      isoStack.length = 0;
       lastIsoChange = d;
-    } else if (
-      !hold.active &&
-      !isConsolidation(settings, d) &&
-      iso + stepFor(iso, settings.isoIncrement, settings.lightKg) <= settings.isoMax &&
-      daysBetween(lastIsoChange, d) >= settings.isoGreenDays &&
-      Array.from({ length: settings.isoGreenDays }, (_, k) => k + 1).every((i) => {
-        const x = addDays(d, -i);
-        return evidence(x) && st(x) === "green" && map.get(x)?.isoDone;
-      }) &&
-      today !== "amber"
-    ) {
-      isoStack.push(iso);
-      const inc = stepFor(iso, settings.isoIncrement, settings.lightKg);
-      ev({ date: d, kind: "iso", from: `${iso}kg`, to: `${iso + inc}kg`, why: `${settings.isoGreenDays} green days with holds done`, dir: 1 });
-      iso += inc;
-      lastIsoChange = d;
-    }
-
-    // ---- isotonics: progress on a scheduled leg day ----
-    if (settings.legDays.includes(dow(d)) && !hold.active && today !== "red" && today !== "amber" && weekKind(settings, d) === "calves" && !calfUpThisWeek(d)) {
-      const need = settings.sessionsToProgress;
-      const seatedReady = legSinceSeatedUp >= need;
-      const standingReady = legSinceStandingUp >= need && standing < 8;
-      const pick: "seated" | "standing" | undefined =
-        seatedReady && standingReady ? (lastCalfKind === "seated" ? "standing" : "seated") : seatedReady ? "seated" : standingReady ? "standing" : undefined;
-      if (pick === "seated") {
-        const inc = stepFor(seated, settings.seatedIncrement, settings.lightKg);
-        ev({ date: d, kind: "seated", from: `${seated}kg`, to: `${seated + inc}kg`, why: `${need} leg days tolerated`, dir: 1 });
-        seated += inc;
-        legSinceSeatedUp = 0;
-        lastCalfUp = d;
-        lastCalfKind = "seated";
-      } else if (pick === "standing") {
-        ev({ date: d, kind: "standing", from: STANDING_NAMES(standing), to: STANDING_NAMES(standing + 1), why: `${need} leg days tolerated`, dir: 1 });
-        standing += 1;
-        legSinceStandingUp = 0;
-        lastCalfUp = d;
-        lastCalfKind = "standing";
+      calvesDown(d, "Flare: calf loads down a step");
+      ev({ date: d, kind: "flare", from: "", to: "", why: `Flare logged. Settled once 2 mornings in a row are back to ${flareTarget}/10 or lower`, dir: -1 });
+      lastDrop = d;
+      changedDown = true;
+    } else if (flare && flareStart) {
+      const ok = (x: string) => {
+        const v = map.get(x);
+        return !!v && !v.flare && v.morningPain != null && v.morningPain <= flareTarget;
+      };
+      if (daysBetween(flareStart, d) >= 2 && ok(d) && ok(yd)) {
+        flare = false;
+        ev({ date: d, kind: "flare", from: "", to: "", why: `Flare settled (2 mornings at ${flareTarget}/10 or lower). Progressions resume after a week`, dir: 0 });
       }
     }
 
-    days.push({ date: d, weekday, weekend, iso, seated, standingLevel: standing, hold: hold.active, holdUntil: hold.until, status: today });
+    // ---- red morning (not a new flare): isometrics back to the previous load ----
+    if (!flareOnset && am === "red") {
+      isoBack(d, `Red morning${stepsNote}`);
+      lastDrop = d;
+      changedDown = true;
+    }
+
+    // ---- rising trend: scale back once, then give it a week ----
+    if (!flare && !changedDown && trend?.dir === "rising" && daysBetween(lastDrop, d) >= 7 && (iso > settings.isoStart || seated > settings.seatedStart || standing > 0)) {
+      const why = `Morning pain trending up (7-day avg ${trend.recent} vs ${trend.prior})`;
+      isoBack(d, why);
+      calvesDown(d, why);
+      lastDrop = d;
+      changedDown = true;
+    }
+
+    // ---- gates shared by both progressions ----
+    const recentFlare = flareStarts.some((f) => daysBetween(f, d) < 7) || events.some((x) => x.kind === "flare" && x.dir === 0 && daysBetween(x.date, d) < 7);
+    const gateOpen = !flare && !recentFlare && !isMasked && am === "green" && trend?.dir !== "rising" && !changedDown;
+
+    // green days banked since the last isometric change
+    let isoBanked = 0;
+    for (let i = 1; i <= settings.isoGreenDays; i++) {
+      const x = addDays(d, -i);
+      if (x <= lastIsoChange || masked(x) || st(x) !== "green") break;
+      isoBanked++;
+    }
+
+    // ---- isometrics progress ----
+    const isoStep = stepFor(iso, inc, L);
+    if (gateOpen && isoBanked >= settings.isoGreenDays && iso + isoStep <= settings.isoMax && daysBetween(lastCalfChange, d) >= 2) {
+      isoStack.push(iso);
+      ev({ date: d, kind: "iso", from: `${iso}kg`, to: `${iso + isoStep}kg`, why: `${settings.isoGreenDays} green days in a row${trend ? `, trend ${trend.dir}` : ""}`, dir: 1 });
+      iso += isoStep;
+      lastIsoChange = d;
+    }
+
+    // ---- calves ----
+    const scheduled = isScheduledLegDay(settings, d);
+    const skipCalves = flare || am === "red";
+    const legDay = scheduled || (!!e?.training && e.training !== "skipped") || !!e?.legDay;
+    if (
+      scheduled &&
+      gateOpen &&
+      sessions >= settings.sessionsToProgress &&
+      daysBetween(lastIsoChange, d) >= 2 &&
+      daysBetween(lastCalfChange, d) >= 6
+    ) {
+      const pick: "seated" | "standing" = standing >= 8 ? "seated" : lastCalfKind === "seated" ? "standing" : "seated";
+      if (pick === "seated") {
+        const s = stepFor(seated, sInc, L);
+        ev({ date: d, kind: "seated", from: `${seated}kg`, to: `${seated + s}kg`, why: `${settings.sessionsToProgress} leg sessions tolerated`, dir: 1 });
+        seated += s;
+      } else {
+        ev({ date: d, kind: "standing", from: STANDING_NAMES(standing), to: STANDING_NAMES(standing + 1), why: `${settings.sessionsToProgress} leg sessions tolerated`, dir: 1 });
+        standing += 1;
+      }
+      lastCalfKind = pick;
+      lastCalfChange = d;
+      sessions = 0;
+    }
+
+    let training: Training | undefined = e?.training;
+    if (!training && e?.legDay) training = "done";
+    if (!training && scheduled && e && hasData(e)) training = skipCalves ? "skipped" : "done";
+
+    days.push({
+      date: d,
+      iso,
+      seated,
+      standingLevel: standing,
+      status: st(d),
+      morning: am,
+      masked: isMasked,
+      flare,
+      flareStart: flare ? flareStart : undefined,
+      flareTarget: flare ? flareTarget : undefined,
+      legDay,
+      skipCalves,
+      training,
+      isoBanked,
+      sessionsBanked: sessions,
+      trend,
+    });
   }
-  return { days, events };
+  return { days, events, flareStarts };
 }
 
 // ======================================================================
@@ -291,7 +298,6 @@ export interface Alert {
   tone: "info" | "hold" | "back" | "progress";
   title: string;
   detail: string;
-  action?: "start-rescue";
 }
 
 export interface DayPlan {
@@ -299,9 +305,9 @@ export interface DayPlan {
   state: DayState;
   status?: Status;
   morningLogged: boolean;
-  steps: { target: number; note: string };
   iso: { load: number; sets: number; hold: string; effort: string; note: string };
   legDay: boolean;
+  scheduledLegDay: boolean;
   calves?: {
     skip: boolean;
     note: string;
@@ -309,7 +315,7 @@ export interface DayPlan {
     standing: { desc: string; sets: number; reps: number; loadKg: number };
   };
   legMods: string[];
-  dose?: { mg: number; perDay: number; kind: Course["kind"]; phaseEnds: string; then: string };
+  steps: { typical?: number; heavy: boolean; note: string };
   alerts: Alert[];
   todayEvents: PlanEvent[];
 }
@@ -321,187 +327,153 @@ export const LEG_MODS = [
   "Lunges → rear-foot-elevated split squat, vertical front shin (or low step-ups)",
   "Leg press: feet high, press through heels, stop before heels lift",
   "Leg extensions and hamstring curls as normal",
-  "Hold leg loads where they are this block",
+  "No jumping, skipping or running",
 ];
 
+const KIND_LABEL: Record<PlanEvent["kind"], string> = {
+  iso: "Isometric load",
+  seated: "Seated raise",
+  standing: "Standing raise",
+  reset: "Reset",
+  flare: "Flare",
+};
+
 export function planFor(entries: Entry[], settings: Settings, date: string): { plan: DayPlan; events: PlanEvent[]; days: DayState[] } {
-  const { days, events } = replay(entries, settings, date);
+  const { days, events, flareStarts } = replay(entries, settings, date);
   const state: DayState =
     days[days.length - 1] ??
-    ({ date, weekday: settings.weekdayStart, weekend: settings.weekendStart, iso: settings.isoStart, seated: settings.seatedStart, standingLevel: 0, hold: false } as DayState);
+    ({
+      date,
+      iso: settings.isoStart,
+      seated: settings.seatedStart,
+      standingLevel: 0,
+      masked: true,
+      flare: false,
+      legDay: isScheduledLegDay(settings, date),
+      skipCalves: false,
+      isoBanked: 0,
+      sessionsBanked: 0,
+    } as DayState);
   const entry = entries.find((e) => e.date === date);
-  const status = dayStatus(entry, entries)?.status;
-  const weekend = isWeekend(date);
-  const baseline = weekend ? settings.weekendStart : settings.weekdayStart;
+  const status = dayStatus(entry, entries, settings.painThreshold)?.status;
+  const am = state.morning;
   const alerts: Alert[] = [];
 
-  // ---- steps ----
-  let target = weekend ? state.weekend : state.weekday;
-  let stepNote = "Spread it through the day in 10–15 min chunks, flat ground, rocker shoes.";
-  if (status === "red") {
-    target = Math.min(target, baseline);
-    stepNote =
-      target === baseline
-        ? `Red morning: baseline only (${baseline.toLocaleString()}). No extra walking; shorter stride, short chunks.`
-        : `Red morning: back to baseline ${baseline.toLocaleString()} today.`;
-  } else if (status === "amber") {
-    stepNote = "Amber: hit the target, don't exceed it. " + stepNote;
-  }
-  if (weekend) stepNote += " Weekend baseline is fixed; manage how, not how much.";
-
-  // ---- isometrics ----
-  const isoSets = status === "red" ? 4 : 5;
+  // ---- isometrics (assumed done every day) ----
+  const easy = state.flare || am === "red";
   const iso = {
     load: state.iso,
-    sets: isoSets,
-    hold: "30–45 s",
-    effort: status === "red" ? "30–50%" : "50–70%",
-    note: `Seated soleus hold, heels halfway up, ${state.iso}kg across knees. ${weekend ? "Do a set before longer walks." : "At work: desk push at the same effort instead."} Pain ≤3/10 and should ease.`,
+    sets: easy ? 4 : 5,
+    hold: easy ? "30 s" : "45 s",
+    effort: easy ? "30–50%" : "60–70%",
+    note: easy
+      ? "Keep doing them: they settle pain. Lighter effort, stop if pain climbs over 3/10."
+      : "Seated soleus hold, heels halfway up, load across knees. 2 min rest. Pain ≤3/10 and should ease during the set.",
   };
 
-  // ---- leg day ----
-  const legDay = settings.legDays.includes(dow(date));
+  // ---- calves ----
+  const scheduledLegDay = isScheduledLegDay(settings, date);
+  const legDay = scheduledLegDay || state.legDay;
   let calves: DayPlan["calves"];
   if (legDay) {
-    const sch = seatedScheme(state.seated);
-    const stand = standingRx(state.standingLevel);
     calves = {
-      skip: status === "red",
-      note:
-        status === "red"
-          ? "Red morning: skip calf isotonics today. Leg session without loaded calf work (extensions, curls, trap bar)."
-          : status === "amber"
-            ? "Amber: same loads, no extra sets."
-            : "3 s up, 3 s down. Flat floor, no drop below neutral." +
-              (weekend ? " Biggest load day of the week (session + weekend steps): train early, then keep walking in short chunks." : ""),
-      seated: { load: state.seated, ...sch },
-      standing: stand,
+      skip: state.skipCalves,
+      note: state.flare
+        ? "Flare: no loaded calf work until it settles. Leg session without calf loading (extensions, curls, trap bar) if it feels OK."
+        : am === "red"
+          ? "Red morning: skip calf raises today. Rest of the session without calf loading."
+          : am === "amber"
+            ? "Amber morning: same loads, no extra sets, pain ≤3/10."
+            : "3 s up, 3 s down. Flat floor, no drop below neutral. Pain ≤3/10.",
+      seated: { load: state.seated, ...seatedScheme(state.seated) },
+      standing: standingRx(state.standingLevel),
     };
   }
 
-  // ---- diclofenac ----
-  const d = doseOn(settings, date);
-  const dose: DayPlan["dose"] = d ? { mg: d.mg, perDay: d.perDay, kind: d.course.kind, phaseEnds: d.to, then: "" } : undefined;
-  if (dose) {
-    const next = settings.courses
-      .flatMap((c) => c.steps)
-      .filter((x) => x.from > date)
-      .sort((x, y) => (x.from < y.from ? -1 : 1))[0];
-    dose.then =
-      next && next.from === addDays(dose.phaseEnds, 1)
-        ? `Until ${prettyDate(dose.phaseEnds)}, then ${next.mg}mg × ${next.perDay}`
-        : `Until ${prettyDate(dose.phaseEnds)}, then stop`;
-  }
-  if (state.hold && state.holdUntil) {
+  // ---- steps (everyday walking, context only) ----
+  const typical = typicalSteps(date, entries);
+  const heavy = !!heavySteps(date, entries);
+  let stepNote = "Everyday walking, no target. Logged so the plan can tell whether a bad morning came from walking or training.";
+  if (state.flare || am === "red") stepNote = "Where you can: skip optional walking, break the rest into short chunks, supportive shoes.";
+  else if (am === "amber") stepNote = "Amber: don't add any walking on top of what the day needs.";
+
+  // ---- alerts ----
+  if (state.flare && state.flareStart) {
+    const n = daysBetween(state.flareStart, date) + 1;
     alerts.push({
-      id: "hold",
+      id: "flare",
+      tone: "back",
+      title: `Flare, day ${n}: deload`,
+      detail: `Isometrics stay daily at ${state.iso}kg, lighter effort. No loaded calf work. Cut optional walking. Settled when 2 mornings in a row are ${state.flareTarget}/10 or lower; progressions then wait another week.`,
+    });
+  }
+
+  const flares28 = flareStarts.filter((f) => daysBetween(f, date) < 28 && f <= date).length;
+  const last7 = days.slice(-7).map((x) => x.status);
+  const notGreen = last7.filter((s) => s === "amber" || s === "red").length;
+  const flareLong = state.flare && state.flareStart && daysBetween(state.flareStart, date) >= 10;
+  if (flareLong || flares28 >= 2 || (days.length >= 7 && notGreen >= 5)) {
+    alerts.push({
+      id: "escalate",
+      tone: "back",
+      title: "Get it reviewed",
+      detail: flareLong
+        ? "Flare hasn't settled in 10 days. Book physio or sports physician review (consider imaging)."
+        : flares28 >= 2
+          ? `${flares28} flares in 4 weeks. The load isn't the only problem: book physio or sports physician review.`
+          : `${notGreen} of the last 7 days amber or red. Not settling: book physio or sports physician review.`,
+    });
+  }
+
+  if (state.masked && settings.lastNsaid && date <= addDays(settings.lastNsaid, 4)) {
+    alerts.push({
+      id: "nsaid",
       tone: "hold",
-      title: `Progressions on hold until ${prettyDate(state.holdUntil)}`,
-      detail: "Diclofenac blunts the pain signal, so targets stay put until 4 days after the last dose.",
+      title: `Anti-inflammatory washout until ${prettyDate(addDays(settings.lastNsaid, 4))}`,
+      detail: "Pain is still partly masked, so these days don't count toward progressions. Change the last-dose date in Plan if it's wrong.",
     });
   }
 
-  // ---- pain threshold ----
-  const t = settings.painThreshold;
-  const high = entry
-    ? ([
-        ["morning", entry.morningPain],
-        ["walking", entry.toeOffPain],
-        ["evening", entry.eveningPain],
-      ] as const).filter(([, v]) => v != null && v >= t)
-    : [];
-  const prevStatus = dayStatus(entries.find((e) => e.date === addDays(date, -1)), entries)?.status;
-  const twoReds = status === "red" && prevStatus === "red";
-  if (high.length || twoReds) {
-    const why = high.length ? `${high.map(([k, v]) => `${k} ${v}/10`).join(", ")} (threshold ${t})` : "Two red days in a row";
-    const onCourse = !!d;
-    const clear = clearDays(settings, entries, date);
-    const rescues28 = settings.courses.filter((c) => c.kind === "rescue" && daysBetween(courseStart(c), date) < 28 && courseStart(c) <= date).length;
-    // persistent high pain on a course
-    const recentHigh = [0, 1, 2].every((i) => {
-      const e = entries.find((x) => x.date === addDays(date, -i));
-      return e && [e.morningPain, e.toeOffPain, e.eveningPain].some((v) => v != null && v >= t);
+  const heavyY = heavySteps(addDays(date, -1), entries);
+  if (heavyY && (am === "amber" || am === "red") && !state.flare) {
+    const trainedY = days[days.length - 2]?.training === "done" || days[days.length - 2]?.training === "light";
+    alerts.push({
+      id: "walk",
+      tone: "info",
+      title: "Probably the walking",
+      detail: `Yesterday was ${heavyY.steps.toLocaleString()} steps (usual ${heavyY.typical.toLocaleString()}).${trainedY ? " There was also a leg session, so both are in play." : " No leg session, so training loads aren't to blame."}`,
     });
-    if (onCourse) {
-      alerts.push({
-        id: "pain",
-        tone: "back",
-        title: "Pain over threshold while on diclofenac",
-        detail: `${why}. Don't increase the dose. Offload: CAM boot with heel wedges for 2–3 days, baseline steps only, isometrics only.${recentHigh ? " Three days over threshold on an NSAID: book MRI and a sports physician." : ""}`,
-      });
-    } else if (rescues28 >= 2) {
-      alerts.push({
-        id: "pain",
-        tone: "back",
-        title: "Pain over threshold: escalate",
-        detail: `${why}. Two rescue courses in the last 4 weeks. More NSAID isn't the answer: offload (boot), and book MRI and a sports physician.`,
-      });
-    } else if (clear >= CLEAR_DAYS_REQUIRED) {
-      alerts.push({
-        id: "pain",
-        tone: "back",
-        title: "Pain over threshold: consider a short course",
-        detail: `${why}. Option: diclofenac 50mg × 3 with food for ${RESCUE_DAYS} days, then stop. Offload alongside (boot or baseline steps, isometrics only). Progressions will hold until 4 days after.`,
-        action: "start-rescue",
-      });
-    } else {
-      const ok = addDays(date, CLEAR_DAYS_REQUIRED - clear);
-      alerts.push({
-        id: "pain",
-        tone: "back",
-        title: "Pain over threshold: offload, no NSAID yet",
-        detail: `${why}. Only ${clear} clear day${clear === 1 ? "" : "s"} since the last dose; a new course needs ${CLEAR_DAYS_REQUIRED} (earliest ${prettyDate(ok)}). Use the boot or baseline steps and isometrics only.`,
-      });
-    }
-  }
-
-  // ---- escalation after stopping ----
-  const lastCourse = [...settings.courses].sort((a, b) => (courseEnd(a) < courseEnd(b) ? 1 : -1))[0];
-  if (lastCourse && !d) {
-    const since = daysBetween(courseEnd(lastCourse), date);
-    if (since >= 7 && since <= 21) {
-      const win = Array.from({ length: 7 }, (_, i) => dayStatus(entries.find((e) => e.date === addDays(date, -i)), entries)?.status);
-      const bad = win.filter((s) => s === "red").length >= 2 || win.filter((s) => s && s !== "green").length >= 5;
-      if (bad)
-        alerts.push({
-          id: "escalate",
-          tone: "back",
-          title: "Not settling since stopping diclofenac",
-          detail: `${since} days off and still mostly amber/red. That's the trigger we set: MRI and sports physician review.`,
-        });
-    }
-  }
-
-  const wk = weekKind(settings, date);
-  if (wk === "hold")
-    alerts.push({ id: "week", tone: "info", title: "Hold week", detail: `Every ${settings.consolidateEvery}th week nothing progresses. Same targets; let the tendon catch up.` });
-  else if (wk === "steps")
-    alerts.push({ id: "week", tone: "info", title: "Steps week", detail: "Steps can step up on Monday if the last 2 weeks earned it. Calf loads stay put this week." });
-  else if (wk === "calves")
-    alerts.push({ id: "week", tone: "info", title: "Calf week", detail: "One calf progression is allowed on a leg day this week if earned. Steps stay put." });
-
-  // ---- Monday ----
-  if (dow(date) === 1) {
-    const mon = entry?.morningPain;
-    const fri = entries.find((e) => e.date === addDays(date, -3))?.morningPain;
-    if (mon != null && fri != null)
-      alerts.push({
-        id: "monday",
-        tone: mon <= fri ? "progress" : "hold",
-        title: mon <= fri ? "Weekend tolerated" : "Weekend cost you something",
-        detail: `Monday ${mon}/10 vs Friday ${fri}/10.${mon <= fri ? "" : " Weekday steps won't progress this week."}`,
-      });
   }
 
   const todayEvents = events.filter((e) => e.date === date);
   for (const e of todayEvents)
-    if (e.kind !== "reset")
+    if (e.kind !== "reset" && e.kind !== "flare")
       alerts.push({
         id: `ev-${e.kind}`,
         tone: e.dir < 0 ? "back" : "progress",
-        title: `${{ steps: "Weekday steps", iso: "Isometric load", seated: "Seated raise", standing: "Standing raise", reset: "" }[e.kind]}: ${e.from} → ${e.to}`,
+        title: `${KIND_LABEL[e.kind]}: ${e.from} → ${e.to}`,
         detail: e.why,
       });
+  const settled = todayEvents.find((e) => e.kind === "flare" && e.dir === 0);
+  if (settled) alerts.push({ id: "settled", tone: "progress", title: "Flare settled", detail: settled.why });
+
+  if (state.trend) {
+    const t = state.trend;
+    alerts.push({
+      id: "trend",
+      tone: t.dir === "rising" ? "back" : t.dir === "falling" ? "progress" : "info",
+      title: `Trend: ${t.dir}`,
+      detail: `Morning pain averaged ${t.recent}/10 this week vs ${t.prior}/10 the week before.${t.dir === "rising" ? " No progressions while it's rising; loads drop a step once a week until it turns." : ""}`,
+    });
+  }
+
+  if (!state.flare && !todayEvents.some((e) => e.dir > 0)) {
+    const isoNext = state.iso + stepFor(state.iso, settings.isoIncrement, settings.lightKg);
+    const parts: string[] = [];
+    if (isoNext <= settings.isoMax) parts.push(`Isometric → ${isoNext}kg: ${Math.min(state.isoBanked, settings.isoGreenDays)} of ${settings.isoGreenDays} green days`);
+    parts.push(`Next calf step: ${Math.min(state.sessionsBanked, settings.sessionsToProgress)} of ${settings.sessionsToProgress} tolerated sessions`);
+    alerts.push({ id: "watch", tone: "info", title: "Progress watch", detail: parts.join(" · ") });
+  }
 
   return {
     plan: {
@@ -509,12 +481,12 @@ export function planFor(entries: Entry[], settings: Settings, date: string): { p
       state,
       status,
       morningLogged: entry?.morningPain != null,
-      steps: { target, note: stepNote },
       iso,
       legDay,
+      scheduledLegDay,
       calves,
       legMods: LEG_MODS,
-      dose,
+      steps: { typical, heavy, note: stepNote },
       alerts,
       todayEvents,
     },

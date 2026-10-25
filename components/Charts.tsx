@@ -184,11 +184,13 @@ export function StepsChart({
   dates,
   steps,
   targets,
+  targetLabel = "Target",
   height = 220,
 }: {
   dates: string[];
   steps: (number | null)[];
   targets: number[];
+  targetLabel?: string;
   height?: number;
 }) {
   const plotW = W - PAD.l - PAD.r;
@@ -210,9 +212,15 @@ export function StepsChart({
   };
   // target as a step line
   let tp = "";
+  let pen = false;
   targets.forEach((t, k) => {
+    if (!t) {
+      pen = false;
+      return;
+    }
     const x0 = PAD.l + slot * k;
-    tp += `${k ? "L" : "M"}${x0},${y(t)}L${x0 + slot},${y(t)}`;
+    tp += `${pen ? "L" : "M"}${x0},${y(t)}L${x0 + slot},${y(t)}`;
+    pen = true;
   });
 
   return (
@@ -224,7 +232,7 @@ export function StepsChart({
         </span>
         <span>
           <i className="dash" />
-          Target
+          {targetLabel}
         </span>
       </div>
       <div className="chart-wrap">
@@ -259,7 +267,7 @@ export function StepsChart({
           })}
           <path d={tp} fill="none" stroke="var(--text-2)" strokeWidth={1.5} strokeDasharray="4 3" />
           <text x={W - PAD.r + 8} y={y(targets[targets.length - 1] ?? 0) + 4} className="dlabel">
-            Target
+            {targetLabel}
           </text>
         </svg>
         {i != null && (
@@ -269,7 +277,7 @@ export function StepsChart({
               Steps<span>{steps[i] == null ? "–" : steps[i]!.toLocaleString()}</span>
             </div>
             <div>
-              Target<span>{targets[i].toLocaleString()}</span>
+              {targetLabel}<span>{targets[i] ? targets[i].toLocaleString() : "–"}</span>
             </div>
           </div>
         )}
